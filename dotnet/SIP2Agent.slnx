@@ -1,0 +1,11 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="SIP2Agent.AgentCli\SIP2Agent.AgentCli.csproj" />
+  <Project Path="SIP2Agent.UserAgentService\SIP2Agent.UserAgentService.csproj" />
+  <Project Path="SIP2Agent.UserAgentService.Tests\SIP2Agent.UserAgentService.Tests.csproj" />
+  <Project Path="SIPSorceryExt/SIPSorceryExt.csproj" />
+</Solution>

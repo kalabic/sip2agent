@@ -1,0 +1,4 @@
+[Bb]in/
+[Oo]bj/
+dotnet/.vs/
+**/launchSettings.json
