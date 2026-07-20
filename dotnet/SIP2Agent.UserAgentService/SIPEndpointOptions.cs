@@ -40,8 +40,25 @@ public sealed class SIPEndpointOptions
 
     public bool ShowHelp { get; private init; }
 
+    public string? ConfigFilePath { get; private init; }
+
     public static SIPEndpointOptions Parse(string[] args)
     {
+        if (args.Length > 0 && (args[0] == "--config" || args[0] == "-c"))
+        {
+            if (args.Length != 2)
+            {
+                throw new ArgumentException("Option '--config' must be supplied by itself with exactly one path.");
+            }
+
+            return new SIPEndpointOptions { ConfigFilePath = args[1] };
+        }
+
+        if (args.Any(arg => arg is "--config" or "-c"))
+        {
+            throw new ArgumentException("Option '--config' must be supplied by itself with exactly one path.");
+        }
+
         int? localSipPort = null;
         int? rtpPort = null;
         RtpPortRange? rtpPortRange = null;
@@ -182,6 +199,7 @@ public sealed class SIPEndpointOptions
         writer.WriteLine("Usage: (Windows '.exe' example)");
         writer.WriteLine("  SIP2Agent.AgentCli.exe --registrar <sip-uri-or-host> --username <value> [--realm <value>]");
         writer.WriteLine("                          [--digest-store <path> | --passwd <value> | --password-file <path>] [options]");
+        writer.WriteLine("  SIP2Agent.AgentCli.exe --config <path>");
         writer.WriteLine();
         writer.WriteLine("Options:");
         writer.WriteLine("  --registrar <sip-uri-or-host>    SIP registrar/PBX trunk server.");
@@ -201,6 +219,7 @@ public sealed class SIPEndpointOptions
         writer.WriteLine("  --answer-audio-file <path>       Raw 8 kHz audio file to play after answering an inbound call.");
         writer.WriteLine("  --headless                       Run until Ctrl+C without interactive key commands.");
         writer.WriteLine("  --verbose, -v                    Enable SIP transport trace logging.");
+        writer.WriteLine("  --config, -c <path>              Authoritative YAML configuration; must be the only option.");
         writer.WriteLine("  --help, -h                       Show this help.");
         writer.WriteLine();
         writer.WriteLine("Commands:");

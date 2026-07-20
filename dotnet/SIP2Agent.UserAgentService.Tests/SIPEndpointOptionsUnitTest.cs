@@ -153,6 +153,103 @@ public sealed class SIPEndpointOptionsUnitTest
         Assert.Throws<ArgumentException>(() => SIPEndpointConfig.Validate(config));
     }
 
+    [Theory]
+    [MemberData(nameof(ConfigOptionErrors))]
+    public void ConfigOptionMustBeExclusive(string[] args)
+    {
+        Assert.Throws<ArgumentException>(() => SIPEndpointOptions.Parse(args));
+    }
+
+    public static TheoryData<string[]> ConfigOptionErrors => new()
+    {
+        { new[] { "--config" } },
+        { new[] { "--config", "agent.yaml", "--verbose" } },
+        { new[] { "--verbose", "--config", "agent.yaml" } },
+        { new[] { "-c", "agent.yaml", "-c", "other.yaml" } }
+    };
+
+    [Fact]
+    public void ConfigOptionSelectsYamlMode()
+    {
+        SIPEndpointOptions options = SIPEndpointOptions.Parse(["-c", "agent.yaml"]);
+
+        Assert.Equal("agent.yaml", options.ConfigFilePath);
+    }
+
+    [Fact]
+    public void LoadYamlUsesOnlyYamlValuesAndResolvesConfigRelativePaths()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string passwordPath = Path.Combine(directory, "password.txt");
+            string apiPath = Path.Combine(directory, "rtic-api.yml");
+            string sessionPath = Path.Combine(directory, "rtic-session.yaml");
+            File.WriteAllText(passwordPath, "secret");
+            File.WriteAllText(apiPath, "this is deliberately opaque to SIP2Agent");
+            File.WriteAllText(sessionPath, "also opaque");
+            string yamlPath = Path.Combine(directory, "agent.yaml");
+            File.WriteAllText(yamlPath, """
+                endpoint:
+                  local_sip_port: 0
+                  contact_host: 203.0.113.10
+                registration:
+                  registrar: pbx.example.com
+                  transport: tls
+                  username: alice
+                  max_reconnects: 5
+                  register_retry_interval_seconds: 30
+                  credentials:
+                    password_file: password.txt
+                media:
+                  rtp_port_range: 10000-10019
+                runtime:
+                  headless: true
+                  verbose: false
+                lib_rtic:
+                  api_config_path: rtic-api.yml
+                  session_config_path: rtic-session.yaml
+                """);
+            using var ignoredEnvironment = new EnvironmentVariableScope(S2AEnvVariables.Registrar, "ignored.example.com");
+
+            SIPEndpointConfig config = SIPEndpointConfig.Load(SIPEndpointOptions.Parse(["--config", yamlPath]));
+
+            SIPRegistrationProfile profile = Assert.Single(config.AccountProfiles);
+            Assert.Equal("alice", profile.Username);
+            Assert.Equal("secret", profile.Password);
+            Assert.True(config.Headless);
+            Assert.False(config.Verbose);
+            Assert.Equal(Path.GetFullPath(apiPath), config.LibRTICApiConfigPath);
+            Assert.Equal(Path.GetFullPath(sessionPath), config.LibRTICSessionConfigPath);
+            Assert.Equal(10000, config.RtpPortRange?.StartPort);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("unknown: value")]
+    [InlineData("Endpoint: {}")]
+    [InlineData("endpoint: []")]
+    [InlineData("endpoint: {}\nendpoint: {}")]
+    [InlineData("endpoint: &endpoint {}")]
+    public void LoadYamlRejectsUnsupportedOrUnknownStructure(string yaml)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.yaml");
+        try
+        {
+            File.WriteAllText(path, yaml);
+            Assert.Throws<ArgumentException>(() => SIPEndpointConfig.LoadYaml(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private sealed class EnvironmentVariableScope : IDisposable
     {
         private readonly string _name;

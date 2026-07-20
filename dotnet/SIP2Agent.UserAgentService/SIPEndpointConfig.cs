@@ -3,7 +3,7 @@
 namespace SIP2Agent.UserAgentService;
 
 
-public sealed class SIPEndpointConfig
+public sealed partial class SIPEndpointConfig
 {
 
     public int LocalSipPort { get; init; }
@@ -22,10 +22,21 @@ public sealed class SIPEndpointConfig
 
     public string? AnswerAudioFile { get; init; }
 
+    /// <summary>Opaque LibRTIC API YAML path selected by SIP2Agent configuration.</summary>
+    public string? LibRTICApiConfigPath { get; init; }
+
+    /// <summary>Opaque optional LibRTIC session YAML path selected by SIP2Agent configuration.</summary>
+    public string? LibRTICSessionConfigPath { get; init; }
+
     public IReadOnlyList<SIPRegistrationProfile> AccountProfiles { get; init; } = [];
 
     public static SIPEndpointConfig Load(SIPEndpointOptions options)
     {
+        if (!string.IsNullOrWhiteSpace(options.ConfigFilePath))
+        {
+            return LoadYaml(options.ConfigFilePath);
+        }
+
         string? contactHost = options.ContactHost ?? Environment.GetEnvironmentVariable(S2AEnvVariables.PublicIpAddress);
         string? rtpPortRangeValue = Environment.GetEnvironmentVariable(S2AEnvVariables.RtpPortRange);
         IReadOnlyList<SIPRegistrationProfile> profiles = BuildAccountProfiles(options, contactHost);
@@ -61,6 +72,14 @@ public sealed class SIPEndpointConfig
         {
             throw new ArgumentException("A SIP registration profile cannot specify both a password and a digest store.");
         }
+
+        if (config.LibRTICSessionConfigPath is not null && string.IsNullOrWhiteSpace(config.LibRTICApiConfigPath))
+        {
+            throw new ArgumentException("LibRTICSessionConfigPath requires LibRTICApiConfigPath.");
+        }
+
+        ValidateYamlFilePath(config.LibRTICApiConfigPath, nameof(config.LibRTICApiConfigPath));
+        ValidateYamlFilePath(config.LibRTICSessionConfigPath, nameof(config.LibRTICSessionConfigPath));
     }
 
     public static string ResolveAnswerAudioFilePath(string answerAudioFile)
@@ -179,5 +198,25 @@ public sealed class SIPEndpointConfig
 
         return SIPEndPoint.TryParse(outboundProxy) ??
                throw new ArgumentException($"Outbound proxy endpoint '{outboundProxy}' is invalid.");
+    }
+
+    private static void ValidateYamlFilePath(string? path, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        string extension = Path.GetExtension(path);
+        if (!extension.Equals(".yaml", StringComparison.OrdinalIgnoreCase) &&
+            !extension.Equals(".yml", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"{propertyName} must identify a .yaml or .yml file.");
+        }
+
+        if (!File.Exists(path))
+        {
+            throw new ArgumentException($"{propertyName} file does not exist.");
+        }
     }
 }

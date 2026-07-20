@@ -34,10 +34,6 @@ internal static class Program
             return 0;
         }
 
-        using var loggerFactory = CreateLoggerFactory(options.Verbose == true);
-        SIPSorcery.LogFactory.Set(loggerFactory);
-
-        var logger = loggerFactory.CreateLogger(nameof(Program));
         SIPEndpointConfig config;
         try
         {
@@ -48,6 +44,10 @@ internal static class Program
             System.Console.Error.WriteLine(argExcp.Message);
             return 1;
         }
+
+        using var loggerFactory = CreateLoggerFactory(config.Verbose);
+        SIPSorcery.LogFactory.Set(loggerFactory);
+        var logger = loggerFactory.CreateLogger(nameof(Program));
 
         try
         {
