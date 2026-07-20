@@ -4,8 +4,14 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Folder Name="/external/" />
+  <Folder Name="/external/rtic/">
+    <Project Path="external/rtic/src/LibRTIC/LibRTIC.csproj" />
+  </Folder>
+  <Project Path="MiniRTICallServer.Tests/MiniRTICallServer.Tests.csproj" />
+  <Project Path="MiniRTICallServer/MiniRTICallServer.csproj" />
   <Project Path="SIP2Agent.AgentCli\SIP2Agent.AgentCli.csproj" />
-  <Project Path="SIP2Agent.UserAgentService\SIP2Agent.UserAgentService.csproj" />
   <Project Path="SIP2Agent.UserAgentService.Tests\SIP2Agent.UserAgentService.Tests.csproj" />
+  <Project Path="SIP2Agent.UserAgentService\SIP2Agent.UserAgentService.csproj" />
   <Project Path="SIPSorceryExt/SIPSorceryExt.csproj" />
 </Solution>

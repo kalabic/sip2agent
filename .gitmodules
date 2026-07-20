@@ -1,0 +1,3 @@
+[submodule "dotnet/external/rtic"]
+	path = dotnet/external/rtic
+	url = https://github.com/kalabic/rtic.git
