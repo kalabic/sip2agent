@@ -275,6 +275,9 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
     {
         ActiveOutput? active = null;
         Task<bool>? pendingRead = null;
+        bool idleSilence = false;
+        long nextIdlePacketTimestamp = 0;
+        Task? idlePacketDeadlineTask = null;
 
         try
         {
@@ -284,7 +287,16 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
                 if (active is not null && IsPlaybackDue(active))
                 {
-                    EmitPacket(ref active);
+                    if (EmitPacket(ref active))
+                    {
+                        StartIdleSilence(ref idleSilence, ref nextIdlePacketTimestamp, ref idlePacketDeadlineTask);
+                    }
+                    continue;
+                }
+
+                if (ShouldEmitIdleSilence(active, idleSilence, nextIdlePacketTimestamp))
+                {
+                    EmitIdleSilence(ref nextIdlePacketTimestamp, ref idlePacketDeadlineTask);
                     continue;
                 }
 
@@ -297,10 +309,16 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                             ClearActive(ref active);
                             await ProcessInterruptAsync(interrupt, cancellationToken)
                                 .ConfigureAwait(false);
+                            StartIdleSilence(ref idleSilence, ref nextIdlePacketTimestamp, ref idlePacketDeadlineTask);
                         }
                         continue;
                     }
 
+                    if (command is ResetOutput)
+                    {
+                        idleSilence = false;
+                        idlePacketDeadlineTask = null;
+                    }
                     ProcessOutputCommand(command, ref active);
                     continue;
                 }
@@ -309,7 +327,13 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                     .WaitToReadAsync(cancellationToken)
                     .AsTask();
 
-                if (active is null || !ShouldPace(active))
+                Task? playbackDeadline = active is not null && ShouldPace(active)
+                    ? active.PacketDeadlineTask
+                    : null;
+                Task? idleDeadline = ShouldPaceIdleSilence(active, idleSilence)
+                    ? idlePacketDeadlineTask
+                    : null;
+                if (playbackDeadline is null && idleDeadline is null)
                 {
                     bool canRead = await pendingRead.ConfigureAwait(false);
                     pendingRead = null;
@@ -320,7 +344,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                     continue;
                 }
 
-                Task delayTask = active.PacketDeadlineTask
+                Task delayTask = playbackDeadline ?? idleDeadline
                     ?? throw new InvalidOperationException("The output packet deadline was not scheduled.");
                 Task completed = await Task.WhenAny(pendingRead, delayTask).ConfigureAwait(false);
                 if (completed == pendingRead)
@@ -511,7 +535,24 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
     }
 
-    private void EmitPacket(ref ActiveOutput? active)
+    private bool ShouldPaceIdleSilence(ActiveOutput? active, bool idleSilence)
+    {
+        lock (_gate)
+        {
+            return _state == MediaEndpointState.Running &&
+                idleSilence &&
+                (active is null || !active.PlaybackStarted);
+        }
+    }
+
+    private bool ShouldEmitIdleSilence(
+        ActiveOutput? active,
+        bool idleSilence,
+        long nextIdlePacketTimestamp)
+        => ShouldPaceIdleSilence(active, idleSilence) &&
+            _timeProvider.GetTimestamp() >= nextIdlePacketTimestamp;
+
+    private bool EmitPacket(ref ActiveOutput? active)
     {
         ActiveOutput current = active
             ?? throw new InvalidOperationException("There is no active output to pace.");
@@ -521,13 +562,13 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             if (current.Epoch != GetEpoch())
             {
                 ClearActive(ref active);
-                return;
+                return false;
             }
 
             if (current.IsFinal && current.PendingSipAudio.StoredSampleCount == 0)
             {
                 ClearActive(ref active);
-                return;
+                return true;
             }
 
             short[] packet = new short[SipSamplesPerPacket];
@@ -579,6 +620,46 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             {
                 ClearActive(ref active);
             }
+
+            return completesResponse;
+        }
+    }
+
+    private void StartIdleSilence(
+        ref bool idleSilence,
+        ref long nextIdlePacketTimestamp,
+        ref Task? idlePacketDeadlineTask)
+    {
+        idleSilence = true;
+        nextIdlePacketTimestamp = checked(_timeProvider.GetTimestamp() + _packetTimestampUnits);
+        idlePacketDeadlineTask = Task.Delay(
+            GetDelayUntil(nextIdlePacketTimestamp),
+            _timeProvider,
+            _workerCancellation.Token);
+    }
+
+    private void EmitIdleSilence(ref long nextIdlePacketTimestamp, ref Task? idlePacketDeadlineTask)
+    {
+        lock (_playbackGate)
+        {
+            byte[] encoded = _encoder.EncodeAudio(new short[SipSamplesPerPacket], GetSelectedSourceFormat());
+            if (encoded.Length != SipSamplesPerPacket)
+            {
+                throw new InvalidDataException("The G.711 encoder returned an invalid silence packet length.");
+            }
+
+            OnAudioSourceEncodedSample?.Invoke(SipSamplesPerPacket, encoded);
+            long now = _timeProvider.GetTimestamp();
+            TimeSpan lateness = now >= nextIdlePacketTimestamp
+                ? _timeProvider.GetElapsedTime(nextIdlePacketTimestamp, now)
+                : TimeSpan.Zero;
+            nextIdlePacketTimestamp = lateness >= PacketDuration
+                ? checked(now + _packetTimestampUnits)
+                : checked(nextIdlePacketTimestamp + _packetTimestampUnits);
+            idlePacketDeadlineTask = Task.Delay(
+                GetDelayUntil(nextIdlePacketTimestamp),
+                _timeProvider,
+                _workerCancellation.Token);
         }
     }
 

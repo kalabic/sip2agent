@@ -15,6 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\external\rtic\src\LibRTIC\LibRTIC.csproj" />
     <ProjectReference Include="..\SIPSorceryExt\SIPSorceryExt.csproj" />
   </ItemGroup>
 

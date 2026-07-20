@@ -239,7 +239,7 @@ public sealed class RealtimeAgentBridgeTests
     }
 
     [Fact]
-    public async Task Output_TwoHundredMillisecondsEmitsExactlyTenPacedPackets()
+    public async Task Output_TwoHundredMillisecondsEmitsTenPacedPacketsThenIdleSilence()
     {
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new();
@@ -262,7 +262,9 @@ public sealed class RealtimeAgentBridgeTests
         await Task.Yield();
 
         Assert.Equal(10, received.Count);
-        Assert.False(packets.TryRead(out _));
+        Assert.True(packets.TryRead(out Packet? idle));
+        using AudioEncoder codec = new([Format(SDPWellKnownMediaFormatsEnum.PCMU)]);
+        Assert.Equal(codec.EncodeAudio(new short[160], Format(SDPWellKnownMediaFormatsEnum.PCMU)), idle!.Payload);
         Assert.All(received, packet =>
         {
             Assert.Equal(160u, packet.DurationRtpUnits);
@@ -302,7 +304,7 @@ public sealed class RealtimeAgentBridgeTests
     }
 
     [Fact]
-    public async Task Output_ShortFinalResponsePadsExactlyOnePacket()
+    public async Task Output_ShortFinalResponsePadsThenContinuesSilenceUntilNewResponse()
     {
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new();
@@ -316,11 +318,16 @@ public sealed class RealtimeAgentBridgeTests
 
         Packet packet = await packets.ReadAsync();
         time.Advance(TimeSpan.FromMilliseconds(100));
-        await Task.Yield();
+        Packet firstIdle = await packets.ReadAsync();
+        time.Advance(TimeSpan.FromMilliseconds(20));
+        Packet secondIdle = await packets.ReadAsync();
 
         Assert.Equal(160u, packet.DurationRtpUnits);
         Assert.Equal(160, packet.Payload.Length);
-        Assert.False(packets.TryRead(out _));
+        using AudioEncoder codec = new([Format(SDPWellKnownMediaFormatsEnum.PCMU)]);
+        byte[] silence = codec.EncodeAudio(new short[160], Format(SDPWellKnownMediaFormatsEnum.PCMU));
+        Assert.Equal(silence, firstIdle.Payload);
+        Assert.Equal(silence, secondIdle.Payload);
         Assert.Equal(0, endpoint.UnplayedRealtimeSampleCount);
     }
 
@@ -467,8 +474,9 @@ public sealed class RealtimeAgentBridgeTests
 
         conversation.RaiseDelta(CreateDelta(CreateRamp(480)));
         time.Advance(TimeSpan.FromSeconds(1));
-        await Task.Yield();
-        Assert.False(packets.TryRead(out _));
+        Packet idle = await packets.ReadAsync();
+        using AudioEncoder codec = new([Format(SDPWellKnownMediaFormatsEnum.PCMU)]);
+        Assert.Equal(codec.EncodeAudio(new short[160], Format(SDPWellKnownMediaFormatsEnum.PCMU)), idle.Payload);
     }
 
     [Fact]

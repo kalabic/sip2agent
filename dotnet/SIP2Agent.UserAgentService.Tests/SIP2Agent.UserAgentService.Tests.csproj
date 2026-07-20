@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\external\rtic\src\LibRTIC\LibRTIC.csproj" />
     <ProjectReference Include="..\SIP2Agent.AgentCli\SIP2Agent.AgentCli.csproj" />
     <ProjectReference Include="..\SIP2Agent.UserAgentService\SIP2Agent.UserAgentService.csproj" />
     <ProjectReference Include="..\SIPSorceryExt\SIPSorceryExt.csproj" />

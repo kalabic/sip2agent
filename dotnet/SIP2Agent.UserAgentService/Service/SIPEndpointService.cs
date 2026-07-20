@@ -1,4 +1,6 @@
+using LibRTIC.Config;
 using Microsoft.Extensions.Logging;
+using SIP2Agent.UserAgentService.Integration.LibRTIC;
 using SIPSorcery.SIP;
 using SIPSorcery.Sys;
 
@@ -26,6 +28,7 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
     private readonly RegistrationManager _registrationManager;
     private readonly InboundCallRegistry _calls;
     private readonly PortRange? _rtpPortRange;
+    private readonly Func<ICallAgent> _callAgentFactory;
     private readonly object _stateLock = new();
     private readonly CancellationTokenSource _shutdownCts = new();
     private Task? _shutdownTask;
@@ -42,6 +45,7 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
         _rtpPortRange = config.RtpPortRange is { } range
             ? new PortRange(range.StartPort, range.EndPort)
             : null;
+        _callAgentFactory = SelectCallAgentFactory();
     }
 
     internal int ActiveCallCount => _calls.Count;
@@ -50,6 +54,9 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
 
     internal bool IsRegistrationConnected =>
         _registrationManager.IsConnected;
+
+    internal ICallAgent CreateCallAgent()
+        => _callAgentFactory();
 
     public void Start()
     {
@@ -248,18 +255,11 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
             return SIPResponseStatusCodesEnum.BusyHere;
         }
 
-        string? resolvedAudioFile = string.IsNullOrWhiteSpace(_config.AnswerAudioFile)
-            ? null
-            : SIPEndpointConfig.ResolveAnswerAudioFilePath(_config.AnswerAudioFile);
         CallSession session = CallSession.CreateInbound(
             _sipTransport,
             _logger,
             sipRequest,
-            () => new FilePlaybackCallAgent(
-                _logger,
-                resolvedAudioFile,
-                _config.AcceptRtpFromAny,
-                _rtpPortRange),
+            _callAgentFactory,
             _config.ContactHost,
             _shutdownCts.Token);
 
@@ -280,6 +280,54 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
         }
 
         return SIPResponseStatusCodesEnum.None;
+    }
+
+    private Func<ICallAgent> SelectCallAgentFactory()
+    {
+        string? resolvedAudioFile = string.IsNullOrWhiteSpace(_config.AnswerAudioFile)
+            ? null
+            : SIPEndpointConfig.ResolveAnswerAudioFilePath(_config.AnswerAudioFile);
+        Func<ICallAgent> playbackFactory = () => new FilePlaybackCallAgent(
+            _logger,
+            resolvedAudioFile,
+            _config.AcceptRtpFromAny,
+            _rtpPortRange);
+
+        if (string.IsNullOrWhiteSpace(_config.LibRTICApiConfigPath))
+        {
+            _logger.LogInformation("Selected file-playback call mode.");
+            return playbackFactory;
+        }
+
+        RTICConfigLoadResult result = RTICConfigLoader.LoadFile(
+            _config.LibRTICApiConfigPath,
+            _config.LibRTICSessionConfigPath);
+        if (!result.IsSuccess)
+        {
+            foreach (ConfigDiagnostic diagnostic in result.Diagnostics)
+            {
+                _logger.LogWarning(
+                    "LibRTIC configuration diagnostic {Code} at {Path} (line {Line}, column {Column}): {Message}",
+                    diagnostic.Code,
+                    diagnostic.Path,
+                    diagnostic.Line,
+                    diagnostic.Column,
+                    diagnostic.Message);
+            }
+
+            _logger.LogWarning("LibRTIC configuration is invalid; selected file-playback fallback mode.");
+            return playbackFactory;
+        }
+
+        LibRTICCallAgentFactory realtimeFactory = LibRTICCallAgentFactory.FromLoadResult(result, logger: _logger);
+        if (resolvedAudioFile is not null)
+        {
+            _logger.LogWarning(
+                "LibRTIC call mode is selected; configured answer audio file is ignored.");
+        }
+
+        _logger.LogInformation("Selected LibRTIC realtime call mode.");
+        return () => realtimeFactory.Create(_config.AcceptRtpFromAny, _rtpPortRange);
     }
 
     private bool IsProviderRequest(SIPEndPoint remoteEndPoint, SIPRequest sipRequest)
