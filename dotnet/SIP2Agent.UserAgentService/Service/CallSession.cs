@@ -8,7 +8,7 @@ using SIPSorceryMedia.Abstractions;
 
 namespace SIP2Agent.UserAgentService.Service;
 
-internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
+internal sealed partial class CallSession : IInboundCall, IDisposable, IAsyncDisposable
 {
     private readonly object _stopGate = new();
     private readonly ILogger _logger;
@@ -25,6 +25,7 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
 
     private CallSession(
         string callId,
+        int initialInviteCSeq,
         string remoteDescription,
         SIPUserAgent userAgent,
         SIPServerUserAgent serverUserAgent,
@@ -33,9 +34,11 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
         IPAddress? publicAnswerAddress,
         Action<CallSession>? onAnswered,
         Action<CallSession>? onStopped,
+        string? mediaAuditorRecordingDirectory,
         ILogger logger)
     {
         CallId = callId;
+        InitialInviteCSeq = initialInviteCSeq;
         RemoteDescription = remoteDescription;
         UserAgent = userAgent;
         ServerUserAgent = serverUserAgent;
@@ -47,6 +50,7 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
         _logger = logger;
 
         SubscribeEvents();
+        InitializeMediaAuditor(mediaAuditorRecordingDirectory);
         if (ServerUserAgent.IsCancelled)
         {
             _lifecycle.RequestStop(CallTerminationReason.RemoteCancellation);
@@ -54,6 +58,8 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
     }
 
     public string CallId { get; }
+
+    internal int InitialInviteCSeq { get; }
 
     public DateTimeOffset Inserted { get; } = DateTimeOffset.Now;
 
@@ -83,7 +89,8 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
         string? publicAnswerAddress,
         CancellationToken applicationCancellationToken,
         Action<CallSession>? onAnswered = null,
-        Action<CallSession>? onStopped = null)
+        Action<CallSession>? onStopped = null,
+        string? mediaAuditorRecordingDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(sipTransport);
         ArgumentNullException.ThrowIfNull(logger);
@@ -114,6 +121,7 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
 
             return new CallSession(
                 callId,
+                inviteRequest.Header.CSeq,
                 inviteRequest.Header.From?.ToString() ??
                     inviteRequest.RemoteSIPEndPoint?.ToString() ??
                     "unknown",
@@ -124,6 +132,7 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
                 publicAddress,
                 onAnswered,
                 onStopped,
+                mediaAuditorRecordingDirectory,
                 logger);
         }
         catch
@@ -326,6 +335,7 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
         }
 
         DetachEvents();
+        DetachMediaAuditor();
 
         try
         {
@@ -335,6 +345,8 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
         {
             _logger.LogWarning(exception, "Failed to stop the agent for call {CallId}.", CallId);
         }
+
+        CompleteMediaAuditor();
 
         try
         {
@@ -410,4 +422,10 @@ internal sealed class CallSession : IInboundCall, IDisposable, IAsyncDisposable
             }
         });
     }
+
+    partial void InitializeMediaAuditor(string? mediaAuditorRecordingDirectory);
+
+    partial void DetachMediaAuditor();
+
+    partial void CompleteMediaAuditor();
 }

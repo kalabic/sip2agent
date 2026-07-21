@@ -20,7 +20,7 @@ internal sealed class LibRTICCallAgentOptions
 }
 
 /// <summary>Creates isolated SIP media and LibRTIC conversation state for one call.</summary>
-internal sealed class LibRTICCallAgent : ICallAgent, IAsyncDisposable
+internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly ILogger _logger;

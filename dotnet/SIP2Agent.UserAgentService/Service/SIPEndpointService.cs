@@ -7,7 +7,7 @@ using SIPSorcery.Sys;
 namespace SIP2Agent.UserAgentService.Service;
 
 
-public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
+public sealed partial class SIPEndpointService : IDisposable, IAsyncDisposable
 {
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(15);
 
@@ -58,6 +58,25 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
     internal ICallAgent CreateCallAgent()
         => _callAgentFactory();
 
+    /// <summary>
+    /// Enables headerless encoded caller-audio recording for realtime calls when the optional
+    /// media auditor was included at compile time.
+    /// </summary>
+    /// <remarks>
+    /// Each <c>.raw</c> file contains sensitive caller audio without RTP headers or codec metadata.
+    /// Protect the selected directory accordingly.
+    /// </remarks>
+    public void EnableMediaAuditorRawRecording(string directoryPath)
+    {
+        bool supported = false;
+        EnableMediaAuditorRawRecordingCore(directoryPath, ref supported);
+        if (!supported)
+        {
+            throw new NotSupportedException(
+                "Media auditor raw recording is unavailable because MEDIA_AUDITOR_ENABLED was not compiled in.");
+        }
+    }
+
     public void Start()
     {
         lock (_stateLock)
@@ -69,6 +88,7 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
             }
 
             SIPUtil.StartTransport(_config, _sipTransport, _logger);
+            StartMediaAuditor();
             _sipTransport.SIPTransportRequestReceived += OnRequest;
             _registrationManager.Start();
         }
@@ -255,13 +275,16 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
             return SIPResponseStatusCodesEnum.BusyHere;
         }
 
+        string? mediaAuditorRecordingDirectory = null;
+        SnapshotMediaAuditorRecordingDirectory(ref mediaAuditorRecordingDirectory);
         CallSession session = CallSession.CreateInbound(
             _sipTransport,
             _logger,
             sipRequest,
             _callAgentFactory,
             _config.ContactHost,
-            _shutdownCts.Token);
+            _shutdownCts.Token,
+            mediaAuditorRecordingDirectory: mediaAuditorRecordingDirectory);
 
         if (!_calls.TryStart(session, _logger, out _))
         {
@@ -413,7 +436,16 @@ public sealed class SIPEndpointService : IDisposable, IAsyncDisposable
         }
 
         _registrationManager.Dispose();
+        StopMediaAuditor();
         SIPUtil.ShutdownTransport(_sipTransport, _logger);
         _shutdownCts.Dispose();
     }
+
+    partial void StartMediaAuditor();
+
+    partial void StopMediaAuditor();
+
+    partial void EnableMediaAuditorRawRecordingCore(string directoryPath, ref bool supported);
+
+    partial void SnapshotMediaAuditorRecordingDirectory(ref string? directoryPath);
 }

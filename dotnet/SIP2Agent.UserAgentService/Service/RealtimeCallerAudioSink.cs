@@ -11,7 +11,7 @@ using SIPSorceryMedia.Abstractions;
 
 namespace SIP2Agent.UserAgentService.Service;
 
-internal sealed class RealtimeCallerAudioSink : IAudioSink, IDisposable
+internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
 {
     internal const int InputChannelCapacity = 10;
     internal const int RealtimeSampleRate = 24_000;
@@ -175,6 +175,7 @@ internal sealed class RealtimeCallerAudioSink : IAudioSink, IDisposable
 
     public void GotEncodedMediaFrame(EncodedAudioFrame encodedMediaFrame)
     {
+        RecordMediaAuditorFrame(encodedMediaFrame);
         try
         {
             long epoch;
@@ -225,6 +226,7 @@ internal sealed class RealtimeCallerAudioSink : IAudioSink, IDisposable
             return;
         }
 
+        CloseMediaAuditorRecording();
         _decoder.Dispose();
         _callerAudioBuffer.Dispose();
         _workerCancellation.Dispose();
@@ -377,4 +379,8 @@ internal sealed class RealtimeCallerAudioSink : IAudioSink, IDisposable
                 epoch);
         }
     }
+
+    partial void RecordMediaAuditorFrame(EncodedAudioFrame encodedMediaFrame);
+
+    partial void CloseMediaAuditorRecording();
 }

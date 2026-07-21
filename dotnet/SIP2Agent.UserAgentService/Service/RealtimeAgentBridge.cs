@@ -5,7 +5,7 @@ using SIPSorceryMedia.Abstractions;
 
 namespace SIP2Agent.UserAgentService.Service;
 
-internal sealed class RealtimeAgentBridge : IDisposable, IAsyncDisposable
+internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposable
 {
     internal const int SIP_SAMPLE_RATE = RealtimeAssistantAudioSource.SipSampleRate;
     internal const int REALTIME_SAMPLE_RATE = RealtimeAssistantAudioSource.RealtimeSampleRate;
