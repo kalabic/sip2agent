@@ -17,7 +17,7 @@ public sealed class RTICCallAgentTests
     public async Task PrepareAsync_WaitsForProviderReadyAndPassesCallerBuffer()
     {
         FakeRealtimeSession provider = new();
-        IAudioBufferOutput? callerAudio = null;
+        IPcm16FrameOutput? callerAudio = null;
         await using RTICCallAgent agent = CreateAgent(
             provider,
             captureCallerAudio: output => callerAudio = output);
@@ -28,6 +28,7 @@ public sealed class RTICCallAgentTests
         Assert.Equal(ASampleValueFormat.S16, callerAudio.Format.SampleValueFormat);
         Assert.Equal(24_000, callerAudio.Format.SampleRate);
         Assert.Equal(1, callerAudio.Format.ChannelCount);
+        Assert.Equal(AByteOrder.LittleEndian, callerAudio.Format.ByteOrder);
 
         provider.CompleteReady();
         await preparation;
@@ -160,7 +161,7 @@ public sealed class RTICCallAgentTests
         TimeSpan? preparationTimeout = null,
         TimeSpan? stopTimeout = null,
         Func<Task>? startMediaAsync = null,
-        Action<IAudioBufferOutput>? captureCallerAudio = null,
+        Action<IPcm16FrameOutput>? captureCallerAudio = null,
         Action? onFactoryCall = null)
     {
         RTICCallAgentOptions options = new()
@@ -173,7 +174,7 @@ public sealed class RTICCallAgentTests
         return RTICCallAgent.CreateForTesting(
             configuration ?? ValidConfiguration(),
             options,
-            (InfoLog _, RTICConfig _, IAudioBufferOutput output, CancellationToken _) =>
+            (InfoLog _, RTICConfig _, IPcm16FrameOutput output, CancellationToken _) =>
             {
                 onFactoryCall?.Invoke();
                 captureCallerAudio?.Invoke(output);

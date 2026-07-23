@@ -27,7 +27,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
     private readonly InfoLog _info;
     private readonly RTICConfig _configuration;
     private readonly LibRTICCallAgentOptions _options;
-    private readonly Func<InfoLog, RTICConfig, IAudioBufferOutput, CancellationToken, IRealtimeAgentSession>
+    private readonly Func<InfoLog, RTICConfig, IPcm16FrameOutput, CancellationToken, IRealtimeAgentSession>
         _sessionFactory;
     private readonly RealtimeAgentBridge _audioBridge;
     private readonly Func<Task> _startMediaAsync;
@@ -46,7 +46,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
         RTICConfig configuration,
         LibRTICCallAgentOptions options,
         ILogger logger,
-        Func<InfoLog, RTICConfig, IAudioBufferOutput, CancellationToken, IRealtimeAgentSession> sessionFactory,
+        Func<InfoLog, RTICConfig, IPcm16FrameOutput, CancellationToken, IRealtimeAgentSession> sessionFactory,
         RealtimeAgentBridge audioBridge,
         VoIPMediaSession mediaSession,
         Func<Task> startMediaAsync)
@@ -112,7 +112,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
         RTICConfig configuration,
         LibRTICCallAgentOptions options,
         ILogger logger,
-        Func<InfoLog, RTICConfig, IAudioBufferOutput, CancellationToken, IRealtimeAgentSession> sessionFactory,
+        Func<InfoLog, RTICConfig, IPcm16FrameOutput, CancellationToken, IRealtimeAgentSession> sessionFactory,
         Func<Task> startMediaAsync,
         bool acceptRtpFromAny = true,
         PortRange? rtpPortRange = null)
@@ -190,7 +190,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
     private static IRealtimeAgentSession CreateSession(
         InfoLog info,
         RTICConfig configuration,
-        IAudioBufferOutput callerAudioOutput,
+        IPcm16FrameOutput callerAudioOutput,
         CancellationToken cancellationToken)
     {
         RTIConversation conversation = RTIConversationTask.Create(info, cancellationToken);

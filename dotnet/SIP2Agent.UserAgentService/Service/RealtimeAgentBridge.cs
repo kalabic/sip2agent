@@ -23,6 +23,8 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
 
     private Task? _stopTask;
 
+    private int _faulted;
+
     internal RealtimeAgentBridge(ILogger logger, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
@@ -41,7 +43,7 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
 
     internal long UnplayedRealtimeSampleCount => _assistant.UnplayedRealtimeSampleCount;
 
-    internal IAudioBufferOutput CallerAudioOutput => _caller.CallerAudioOutput;
+    internal IPcm16FrameOutput CallerAudioOutput => _caller.CallerAudioOutput;
 
     internal RealtimeCallerAudioSink Caller => _caller;
 
@@ -109,7 +111,7 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
 
     private void Fail(Exception exception)
     {
-        if (!_completion.TrySetException(exception))
+        if (Interlocked.Exchange(ref _faulted, 1) != 0)
         {
             return;
         }
@@ -117,5 +119,6 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
         _assistant.CancelSessionSafely();
         _assistant.RequestStop();
         _caller.RequestStop();
+        _completion.TrySetException(exception);
     }
 }

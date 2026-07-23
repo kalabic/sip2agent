@@ -187,7 +187,7 @@ public sealed class RTIConversationSessionTests
 
         public override void ConfigureWith(
             RTICConfig options,
-            IAudioBufferOutput audioOutputStream)
+            IPcm16FrameOutput audioOutputFrames)
             => throw new NotSupportedException();
 
         public override void Run() => throw new NotSupportedException();

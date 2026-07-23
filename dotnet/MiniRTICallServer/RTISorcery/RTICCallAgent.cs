@@ -29,7 +29,7 @@ internal sealed class RTICCallAgent : ICallAgent, IAsyncDisposable
     private readonly Func<
         InfoLog,
         RTICConfig,
-        IAudioBufferOutput,
+        IPcm16FrameOutput,
         CancellationToken,
         IRealtimeAgentSession> _sessionFactory;
     private readonly RealtimeAgentBridge _audioBridge;
@@ -51,7 +51,7 @@ internal sealed class RTICCallAgent : ICallAgent, IAsyncDisposable
         Func<
             InfoLog,
             RTICConfig,
-            IAudioBufferOutput,
+            IPcm16FrameOutput,
             CancellationToken,
             IRealtimeAgentSession> sessionFactory,
         RealtimeAgentBridge audioBridge,
@@ -121,7 +121,7 @@ internal sealed class RTICCallAgent : ICallAgent, IAsyncDisposable
         Func<
             InfoLog,
             RTICConfig,
-            IAudioBufferOutput,
+            IPcm16FrameOutput,
             CancellationToken,
             IRealtimeAgentSession> sessionFactory,
         Func<Task> startMediaAsync)
@@ -198,7 +198,7 @@ internal sealed class RTICCallAgent : ICallAgent, IAsyncDisposable
     private static IRealtimeAgentSession CreateSession(
         InfoLog info,
         RTICConfig configuration,
-        IAudioBufferOutput callerAudioOutput,
+        IPcm16FrameOutput callerAudioOutput,
         CancellationToken cancellationToken)
     {
         RTIConversation conversation = RTIConversationTask.Create(info, cancellationToken);

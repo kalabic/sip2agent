@@ -120,10 +120,9 @@ public sealed class RealtimeAgentBridgeTests
         endpoint.Caller.GotEncodedMediaFrame(
             new EncodedAudioFrame(0, incomingFormat, 20, frame));
 
-        byte[] buffered = await ReadCallerAudioAsync(endpoint);
+        short[] buffered = await ReadCallerAudioAsync(endpoint);
 
         Assert.NotEmpty(buffered);
-        Assert.Equal(0, buffered.Length & 1);
         Assert.Equal(0, endpoint.DroppedInputFrameCount);
     }
 
@@ -143,10 +142,9 @@ public sealed class RealtimeAgentBridgeTests
                 new EncodedAudioFrame(0, pcmu, 10, halfFrame));
         }
 
-        byte[] buffered = await ReadCallerAudioAsync(endpoint, minimumBytes: 960);
+        short[] buffered = await ReadCallerAudioAsync(endpoint, minimumFrames: 480);
 
-        Assert.True(buffered.Length >= 960);
-        Assert.Equal(0, buffered.Length & 1);
+        Assert.True(buffered.Length >= 480);
     }
 
     [Fact]
@@ -180,18 +178,18 @@ public sealed class RealtimeAgentBridgeTests
         byte[] payload = codec.EncodeAudio(CreateRamp(160), pcmu);
 
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
-        await WaitUntilAsync(() => endpoint.CallerAudioOutput.StoredByteCount > 0);
-        int bufferedBeforePause = endpoint.CallerAudioOutput.StoredByteCount;
+        await WaitUntilAsync(() => endpoint.CallerAudioOutput.Count > 0);
+        int bufferedFramesBeforePause = endpoint.CallerAudioOutput.Count;
 
         await endpoint.Caller.PauseAudioSink();
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
         await Task.Yield();
-        Assert.Equal(bufferedBeforePause, endpoint.CallerAudioOutput.StoredByteCount);
+        Assert.Equal(bufferedFramesBeforePause, endpoint.CallerAudioOutput.Count);
 
         await endpoint.Caller.ResumeAudioSink();
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
         await WaitUntilAsync(
-            () => endpoint.CallerAudioOutput.StoredByteCount > bufferedBeforePause);
+            () => endpoint.CallerAudioOutput.Count > bufferedFramesBeforePause);
     }
 
     [Fact]
@@ -224,12 +222,12 @@ public sealed class RealtimeAgentBridgeTests
 
         for (int index = 0; index < 150 && !endpoint.Completion.IsCompleted; index++)
         {
-            int previousByteCount = endpoint.CallerAudioOutput.StoredByteCount;
+            int previousFrameCount = endpoint.CallerAudioOutput.Count;
             endpoint.Caller.GotEncodedMediaFrame(
                 new EncodedAudioFrame(0, pcmu, 20, payload));
             await WaitUntilAsync(
                 () => endpoint.Completion.IsCompleted ||
-                      endpoint.CallerAudioOutput.StoredByteCount > previousByteCount);
+                      endpoint.CallerAudioOutput.Count > previousFrameCount);
         }
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -589,7 +587,7 @@ public sealed class RealtimeAgentBridgeTests
 
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
 
-        byte[] buffered = await ReadCallerAudioAsync(endpoint);
+        short[] buffered = await ReadCallerAudioAsync(endpoint);
         Assert.NotEmpty(buffered);
     }
 
@@ -632,16 +630,16 @@ public sealed class RealtimeAgentBridgeTests
         return endpoint;
     }
 
-    private static async Task<byte[]> ReadCallerAudioAsync(
+    private static async Task<short[]> ReadCallerAudioAsync(
         RealtimeAgentBridge endpoint,
-        int minimumBytes = 1)
+        int minimumFrames = 1)
     {
         await WaitUntilAsync(
-            () => endpoint.CallerAudioOutput.StoredByteCount >= minimumBytes);
+            () => endpoint.CallerAudioOutput.Count >= minimumFrames);
 
-        byte[] audio = new byte[endpoint.CallerAudioOutput.StoredByteCount];
-        int bytesRead = endpoint.CallerAudioOutput.Read(audio, 0, audio.Length);
-        Array.Resize(ref audio, bytesRead);
+        short[] audio = new short[endpoint.CallerAudioOutput.Count];
+        int framesRead = endpoint.CallerAudioOutput.Read(audio, 0, audio.Length);
+        Array.Resize(ref audio, framesRead);
         return audio;
     }
 

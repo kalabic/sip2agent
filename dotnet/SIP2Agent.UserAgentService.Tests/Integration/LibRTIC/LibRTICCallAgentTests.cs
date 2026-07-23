@@ -22,7 +22,7 @@ public sealed class LibRTICCallAgentTests
     public async Task PrepareAsync_WaitsForProviderReadyAndPassesCallerBufferAndExactConfiguration()
     {
         FakeRealtimeSession provider = new();
-        IAudioBufferOutput? callerAudio = null;
+        IPcm16FrameOutput? callerAudio = null;
         RTICConfig configuration = ValidConfiguration();
         RTICConfig? configuredWith = null;
         await using LibRTICCallAgent agent = CreateAgent(
@@ -37,6 +37,7 @@ public sealed class LibRTICCallAgentTests
         Assert.Equal(ASampleValueFormat.S16, callerAudio.Format.SampleValueFormat);
         Assert.Equal(24_000, callerAudio.Format.SampleRate);
         Assert.Equal(1, callerAudio.Format.ChannelCount);
+        Assert.Equal(AByteOrder.LittleEndian, callerAudio.Format.ByteOrder);
         Assert.Same(configuration, configuredWith);
 
         provider.CompleteReady();
@@ -189,7 +190,7 @@ public sealed class LibRTICCallAgentTests
         TimeSpan? preparationTimeout = null,
         TimeSpan? stopTimeout = null,
         Func<Task>? startMediaAsync = null,
-        Action<IAudioBufferOutput>? captureCallerAudio = null,
+        Action<IPcm16FrameOutput>? captureCallerAudio = null,
         Action<RTICConfig>? captureConfiguration = null,
         bool acceptRtpFromAny = true,
         PortRange? rtpPortRange = null)
@@ -205,7 +206,7 @@ public sealed class LibRTICCallAgentTests
             configuration ?? ValidConfiguration(),
             options,
             NullLogger.Instance,
-            (InfoLog _, RTICConfig configured, IAudioBufferOutput output, CancellationToken _) =>
+            (InfoLog _, RTICConfig configured, IPcm16FrameOutput output, CancellationToken _) =>
             {
                 captureConfiguration?.Invoke(configured);
                 captureCallerAudio?.Invoke(output);

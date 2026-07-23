@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AudioFormatLib" Version="1.5.0-alpha" />
+    <PackageReference Include="AudioFormatLib" Version="1.6.0-beta" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.10" />
     <PackageReference Include="SIPSorcery" Version="10.0.12" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />

@@ -1,6 +1,6 @@
 using AudioFormatLib;
 using AudioFormatLib.Buffers;
-using AudioFormatLib.Extensions;
+using AudioFormatLib.IO;
 using AudioFormatLib.Utils;
 using Microsoft.Extensions.Logging;
 using SIPSorcery.Media;
@@ -287,9 +287,14 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
                 if (active is not null && IsPlaybackDue(active))
                 {
+                    long packetTimestamp = _timeProvider.GetTimestamp();
                     if (EmitPacket(ref active))
                     {
-                        StartIdleSilence(ref idleSilence, ref nextIdlePacketTimestamp, ref idlePacketDeadlineTask);
+                        StartIdleSilence(
+                            ref idleSilence,
+                            ref nextIdlePacketTimestamp,
+                            ref idlePacketDeadlineTask,
+                            packetTimestamp);
                     }
                     continue;
                 }
@@ -309,7 +314,11 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                             ClearActive(ref active);
                             await ProcessInterruptAsync(interrupt, cancellationToken)
                                 .ConfigureAwait(false);
-                            StartIdleSilence(ref idleSilence, ref nextIdlePacketTimestamp, ref idlePacketDeadlineTask);
+                            StartIdleSilence(
+                                ref idleSilence,
+                                ref nextIdlePacketTimestamp,
+                                ref idlePacketDeadlineTask,
+                                _timeProvider.GetTimestamp());
                         }
                         continue;
                     }
@@ -445,12 +454,12 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         else
         {
             active.RealtimeSamplesWithoutOutput = 0;
-            active.PendingSipAudio.WriteSampleValuesExactly(converted, 0, converted.Length);
+            active.WriteFrames(converted);
             active.TotalSipSamplesProduced += converted.Length;
         }
 
         if (!active.PlaybackStarted &&
-            active.PendingSipAudio.StoredSampleCount >= OutputPrebufferPackets * SipSamplesPerPacket)
+            active.PendingFrameCount >= OutputPrebufferPackets * SipSamplesPerPacket)
         {
             StartPlayback(active);
         }
@@ -492,7 +501,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
         if (flushed.Length > 0)
         {
-            active.PendingSipAudio.WriteSampleValuesExactly(flushed, 0, flushed.Length);
+            active.WriteFrames(flushed);
         }
         active.TotalSipSamplesProduced += flushed.Length;
         active.IsFinal = true;
@@ -565,7 +574,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 return false;
             }
 
-            if (current.IsFinal && current.PendingSipAudio.StoredSampleCount == 0)
+            if (current.IsFinal && current.PendingFrameCount == 0)
             {
                 ClearActive(ref active);
                 return true;
@@ -573,17 +582,17 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
             short[] packet = new short[SipSamplesPerPacket];
             int realSamples;
-            if (current.PendingSipAudio.StoredSampleCount >= SipSamplesPerPacket)
+            if (current.PendingFrameCount >= SipSamplesPerPacket)
             {
                 realSamples = SipSamplesPerPacket;
-                current.PendingSipAudio.ReadSampleValuesExactly(packet, 0, realSamples);
+                current.ReadFrames(packet);
             }
             else if (current.IsFinal)
             {
-                realSamples = current.PendingSipAudio.StoredSampleCount;
+                realSamples = current.PendingFrameCount;
                 if (realSamples > 0)
                 {
-                    current.PendingSipAudio.ReadSampleValuesExactly(packet, 0, realSamples);
+                    current.ReadFrames(packet.AsSpan(0, realSamples));
                 }
             }
             else
@@ -599,7 +608,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                     $"The {selectedFormat.FormatName} encoder returned {encoded.Length} bytes for a 20 ms packet.");
             }
 
-            bool completesResponse = current.IsFinal && current.PendingSipAudio.StoredSampleCount == 0;
+            bool completesResponse = current.IsFinal && current.PendingFrameCount == 0;
             if (!completesResponse)
             {
                 ScheduleNextPacket(current);
@@ -628,10 +637,11 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
     private void StartIdleSilence(
         ref bool idleSilence,
         ref long nextIdlePacketTimestamp,
-        ref Task? idlePacketDeadlineTask)
+        ref Task? idlePacketDeadlineTask,
+        long timelineStartTimestamp)
     {
         idleSilence = true;
-        nextIdlePacketTimestamp = checked(_timeProvider.GetTimestamp() + _packetTimestampUnits);
+        nextIdlePacketTimestamp = checked(timelineStartTimestamp + _packetTimestampUnits);
         idlePacketDeadlineTask = Task.Delay(
             GetDelayUntil(nextIdlePacketTimestamp),
             _timeProvider,
@@ -1060,14 +1070,15 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
     private sealed class ActiveOutput : IDisposable
     {
+        private readonly AudioStreamBuffer _pendingSipAudio;
+
         public RealtimeOutputIdentity Identity { get; }
         public long Epoch { get; }
         public AudioResampler Resampler { get; }
         public CancellationTokenSource PacingCancellation { get; }
-        public AudioStreamBuffer PendingSipAudio { get; } =
-            AudioStreamBuffer.CreateForDuration(
-                new APcmFormat(ASampleValueFormat.S16, SipSampleRate, 1),
-                TimeSpan.FromSeconds(30));
+        public IPcm16FrameInput PendingSipInput { get; }
+        public IPcm16FrameOutput PendingSipOutput { get; }
+        public int PendingFrameCount => PendingSipOutput.Count;
         public long TotalRealtimeSamplesReceived { get; set; }
         public long TotalSipSamplesProduced { get; set; }
         public long TotalRealSipSamplesEmitted { get; set; }
@@ -1088,6 +1099,37 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             Epoch = epoch;
             Resampler = resampler;
             PacingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _pendingSipAudio = AudioStreamBuffer.CreateForDuration(
+                new APcmFormat(
+                    ASampleValueFormat.S16,
+                    SipSampleRate,
+                    1,
+                    byteOrder: AByteOrder.LittleEndian),
+                TimeSpan.FromSeconds(30));
+            PendingSipInput = _pendingSipAudio.Input.Pcm16Frames
+                ?? throw new InvalidOperationException(
+                    "The pending SIP audio buffer is not PCM16-compatible.");
+            PendingSipOutput = _pendingSipAudio.Output.Pcm16Frames
+                ?? throw new InvalidOperationException(
+                    "The pending SIP audio buffer is not PCM16-compatible.");
+        }
+
+        public void WriteFrames(ReadOnlySpan<short> source)
+        {
+            if (!PendingSipInput.TryWrite(source))
+            {
+                throw new InvalidOperationException(
+                    "The pending SIP audio buffer is closed or does not have enough free space.");
+            }
+        }
+
+        public void ReadFrames(Span<short> destination)
+        {
+            if (!PendingSipOutput.TryRead(destination))
+            {
+                throw new InvalidOperationException(
+                    "The pending SIP audio buffer is closed or does not contain enough frames.");
+            }
         }
 
         public void Dispose()
@@ -1095,7 +1137,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             PacingCancellation.Cancel();
             PacingCancellation.Dispose();
             Resampler.Dispose();
-            PendingSipAudio.Dispose();
+            _pendingSipAudio.Dispose();
         }
     }
 }

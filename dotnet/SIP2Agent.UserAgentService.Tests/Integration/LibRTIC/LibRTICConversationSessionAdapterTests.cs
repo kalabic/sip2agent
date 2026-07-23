@@ -151,7 +151,7 @@ public sealed class LibRTICConversationSessionAdapterTests
         public void Raise<T>(T update) where T : class => ConversationEvents.Invoke(update);
         public void CompleteRun() => _run.TrySetResult();
 
-        public override void ConfigureWith(RTICConfig options, IAudioBufferOutput audioOutputStream)
+        public override void ConfigureWith(RTICConfig options, IPcm16FrameOutput audioOutputFrames)
             => throw new NotSupportedException();
         public override void Run() => throw new NotSupportedException();
         public override Task RunAsync()

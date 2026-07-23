@@ -2,7 +2,6 @@ using System.Net;
 using System.Threading.Channels;
 using AudioFormatLib;
 using AudioFormatLib.Buffers;
-using AudioFormatLib.Extensions;
 using AudioFormatLib.IO;
 using AudioFormatLib.Utils;
 using Microsoft.Extensions.Logging;
@@ -22,6 +21,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
     private readonly G711FormatNegotiation _formats = new();
     private readonly AudioEncoder _decoder;
     private readonly AudioStreamBuffer _callerAudioBuffer;
+    private readonly IPcm16FrameInput _callerAudioInput;
     private readonly Channel<InboundFrame> _frames;
     private readonly CancellationTokenSource _workerCancellation = new();
     private readonly Action<Exception> _onFault;
@@ -37,7 +37,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
 
     internal long DroppedFrameCount => Interlocked.Read(ref _droppedFrames);
 
-    internal IAudioBufferOutput CallerAudioOutput => _callerAudioBuffer.Output.Buffer;
+    internal IPcm16FrameOutput CallerAudioOutput { get; }
 
     internal RealtimeCallerAudioSink(ILogger logger, Action<Exception> onFault)
     {
@@ -52,8 +52,16 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
             new AudioFormat(SDPWellKnownMediaFormatsEnum.PCMA),
         ]);
         _callerAudioBuffer = AudioStreamBuffer.CreateForDuration(
-            new APcmFormat(ASampleValueFormat.S16, RealtimeSampleRate, 1),
+            new APcmFormat(
+                ASampleValueFormat.S16,
+                RealtimeSampleRate,
+                1,
+                byteOrder: AByteOrder.LittleEndian),
             TimeSpan.FromSeconds(2));
+        _callerAudioInput = _callerAudioBuffer.Input.Pcm16Frames
+            ?? throw new InvalidOperationException("The caller audio buffer is not PCM16-compatible.");
+        CallerAudioOutput = _callerAudioBuffer.Output.Pcm16Frames
+            ?? throw new InvalidOperationException("The caller audio buffer is not PCM16-compatible.");
         _frames = Channel.CreateBounded<InboundFrame>(
             new BoundedChannelOptions(InputChannelCapacity)
             {
@@ -289,7 +297,11 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
                 else
                 {
                     samplesWithoutOutput = 0;
-                    _callerAudioBuffer.WriteSampleValuesExactly(converted, 0, converted.Length);
+                    if (!_callerAudioInput.TryWrite(converted.AsSpan()))
+                    {
+                        throw new InvalidOperationException(
+                            "The caller audio buffer is closed or does not have enough free space.");
+                    }
                 }
             }
         }
