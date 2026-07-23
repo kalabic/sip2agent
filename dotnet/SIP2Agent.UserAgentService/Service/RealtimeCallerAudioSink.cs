@@ -14,11 +14,10 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
 {
     internal const int InputChannelCapacity = 10;
     internal const int RealtimeSampleRate = 24_000;
-    private const int SipSamplesPerPacket = 160;
 
     private readonly object _gate = new();
     private readonly ILogger _logger;
-    private readonly G711FormatNegotiation _formats = new();
+    private readonly AudioFormatNegotiation _formats = new();
     private readonly AudioEncoder _decoder;
     private readonly AudioStreamBuffer _callerAudioBuffer;
     private readonly IPcm16FrameInput _callerAudioInput;
@@ -46,11 +45,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
 
         _logger = logger;
         _onFault = onFault;
-        _decoder = new AudioEncoder(
-        [
-            new AudioFormat(SDPWellKnownMediaFormatsEnum.PCMU),
-            new AudioFormat(SDPWellKnownMediaFormatsEnum.PCMA),
-        ]);
+        _decoder = new AudioEncoder(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
         _callerAudioBuffer = AudioStreamBuffer.CreateForDuration(
             new APcmFormat(
                 ASampleValueFormat.S16,
@@ -95,7 +90,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
         {
             if (_state != MediaEndpointState.NotStarted)
             {
-                if (!G711FormatNegotiation.AreEquivalent(_formats.SelectedFormat, audioFormat))
+                if (!AudioFormatNegotiation.AreEquivalent(_formats.SelectedFormat, audioFormat))
                 {
                     activeChangeFailure = new InvalidOperationException(
                         "The negotiated caller-audio format cannot change after its worker starts.");
@@ -254,6 +249,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
     {
         AudioResampler? resampler = null;
         long workerEpoch = -1;
+        int workerSampleRate = 0;
         int samplesWithoutOutput = 0;
 
         try
@@ -266,29 +262,29 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
                     continue;
                 }
 
-                if (workerEpoch != frame.Epoch)
+                AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(frame.Format);
+                if (workerEpoch != frame.Epoch || workerSampleRate != profile.PcmSampleRate)
                 {
                     resampler?.Dispose();
                     resampler = AudioResampler.CreatePcm16(
-                        G711FormatNegotiation.SampleRate,
+                        profile.PcmSampleRate,
                         RealtimeSampleRate);
                     samplesWithoutOutput = 0;
                     workerEpoch = frame.Epoch;
+                    workerSampleRate = profile.PcmSampleRate;
                 }
 
-                G711FormatNegotiation.Validate(frame.Format);
                 short[] decoded = _decoder.DecodeAudio(frame.Payload, frame.Format);
-                if (decoded.Length != frame.Payload.Length)
-                {
-                    throw new InvalidDataException(
-                        "A G.711 frame did not decode to exactly one sample per payload byte.");
-                }
+                AudioFormatNegotiation.ValidateDecodedPayload(
+                    profile,
+                    frame.Payload.Length,
+                    decoded.Length);
 
                 short[] converted = resampler!.Process(decoded, endOfInput: false);
                 if (converted.Length == 0)
                 {
                     samplesWithoutOutput += decoded.Length;
-                    if (samplesWithoutOutput >= SipSamplesPerPacket)
+                    if (samplesWithoutOutput >= profile.PcmSamplesPerPacket)
                     {
                         throw new InvalidDataException(
                             "The SIP input resampler produced no audio for a complete packet.");

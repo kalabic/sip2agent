@@ -11,11 +11,10 @@ namespace SIP2Agent.UserAgentService.Service;
 
 internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 {
-    internal const int SipSampleRate = 8_000;
     internal const int RealtimeSampleRate = 24_000;
-    internal const int SipSamplesPerPacket = 160;
     internal const int OutputPrebufferPackets = 2;
-    internal const int OutputMaxRealtimeSamples = 720_000;
+    internal const int OutputMaxDurationSeconds = 180;
+    internal const int OutputMaxRealtimeSamples = RealtimeSampleRate * OutputMaxDurationSeconds;
     internal const int OutputCommandCapacity = 2_048;
     private const int RealtimeSamplesPer20Milliseconds = 480;
 
@@ -27,12 +26,13 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
     private readonly TimeProvider _timeProvider;
     private readonly long _packetTimestampUnits;
     private readonly AudioEncoder _encoder;
-    private readonly G711FormatNegotiation _formats = new();
+    private readonly AudioFormatNegotiation _formats = new();
     private readonly Channel<OutputCommand> _commands;
     private readonly CancellationTokenSource _workerCancellation = new();
     private readonly Action<Exception> _onFault;
 
     private IRealtimeAgentSession? _session;
+    private AudioCodecProfile? _startedProfile;
     private MediaEndpointState _state;
     private Task? _worker;
     private PlaybackCursor? _playbackCursor;
@@ -78,11 +78,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             1,
             (long)Math.Round(PacketDuration.TotalSeconds * _timeProvider.TimestampFrequency));
 
-        _encoder = new AudioEncoder(
-        [
-            new AudioFormat(SDPWellKnownMediaFormatsEnum.PCMU),
-            new AudioFormat(SDPWellKnownMediaFormatsEnum.PCMA),
-        ]);
+        _encoder = new AudioEncoder(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
         _commands = Channel.CreateBounded<OutputCommand>(
             new BoundedChannelOptions(OutputCommandCapacity)
             {
@@ -132,7 +128,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         {
             if (_state != MediaEndpointState.NotStarted)
             {
-                if (!G711FormatNegotiation.AreEquivalent(_formats.SelectedFormat, audioFormat))
+                if (!AudioFormatNegotiation.AreEquivalent(_formats.SelectedFormat, audioFormat))
                 {
                     activeChangeFailure = new InvalidOperationException(
                         "The negotiated assistant-audio format cannot change after its worker starts.");
@@ -185,8 +181,17 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 return Task.CompletedTask;
             }
 
+            AudioCodecProfile profile = _formats.SelectedProfile;
+            _startedProfile = profile;
+            if (_playbackCursor is not null)
+            {
+                _playbackCursor = _playbackCursor with
+                {
+                    PcmSampleRate = profile.PcmSampleRate,
+                };
+            }
             _state = MediaEndpointState.Running;
-            _worker = Task.Run(() => RunOutputWorkerAsync(_workerCancellation.Token));
+            _worker = Task.Run(() => RunOutputWorkerAsync(profile, _workerCancellation.Token));
         }
 
         return Task.CompletedTask;
@@ -271,7 +276,9 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
     }
 
-    private async Task RunOutputWorkerAsync(CancellationToken cancellationToken)
+    private async Task RunOutputWorkerAsync(
+        AudioCodecProfile profile,
+        CancellationToken cancellationToken)
     {
         ActiveOutput? active = null;
         Task<bool>? pendingRead = null;
@@ -301,7 +308,10 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
                 if (ShouldEmitIdleSilence(active, idleSilence, nextIdlePacketTimestamp))
                 {
-                    EmitIdleSilence(ref nextIdlePacketTimestamp, ref idlePacketDeadlineTask);
+                    EmitIdleSilence(
+                        profile,
+                        ref nextIdlePacketTimestamp,
+                        ref idlePacketDeadlineTask);
                     continue;
                 }
 
@@ -328,7 +338,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                         idleSilence = false;
                         idlePacketDeadlineTask = null;
                     }
-                    ProcessOutputCommand(command, ref active);
+                    ProcessOutputCommand(command, profile, ref active);
                     continue;
                 }
 
@@ -387,7 +397,10 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
     }
 
-    private void ProcessOutputCommand(OutputCommand command, ref ActiveOutput? active)
+    private void ProcessOutputCommand(
+        OutputCommand command,
+        AudioCodecProfile profile,
+        ref ActiveOutput? active)
     {
         long currentEpoch = GetEpoch();
         if (command.Epoch != currentEpoch)
@@ -406,11 +419,11 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 return;
 
             case AudioDelta delta:
-                ProcessAudioDelta(delta, ref active);
+                ProcessAudioDelta(delta, profile, ref active);
                 return;
 
             case AudioFinished finished:
-                ProcessAudioFinished(finished, ref active);
+                ProcessAudioFinished(finished, profile, ref active);
                 return;
 
             default:
@@ -419,7 +432,10 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
     }
 
-    private void ProcessAudioDelta(AudioDelta delta, ref ActiveOutput? active)
+    private void ProcessAudioDelta(
+        AudioDelta delta,
+        AudioCodecProfile profile,
+        ref ActiveOutput? active)
     {
         int realtimeSamples = delta.Pcm16At24Khz.Length / sizeof(short);
         if (active is null)
@@ -427,7 +443,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             active = new ActiveOutput(
                 delta.Identity,
                 delta.Epoch,
-                AudioResampler.CreatePcm16(RealtimeSampleRate, SipSampleRate),
+                profile,
                 _workerCancellation.Token);
         }
         else if (active.Identity != delta.Identity)
@@ -455,24 +471,27 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         {
             active.RealtimeSamplesWithoutOutput = 0;
             active.WriteFrames(converted);
-            active.TotalSipSamplesProduced += converted.Length;
+            active.TotalMediaSamplesProduced += converted.Length;
         }
 
         if (!active.PlaybackStarted &&
-            active.PendingFrameCount >= OutputPrebufferPackets * SipSamplesPerPacket)
+            active.PendingFrameCount >= OutputPrebufferPackets * profile.PcmSamplesPerPacket)
         {
             StartPlayback(active);
         }
     }
 
-    private void ProcessAudioFinished(AudioFinished finished, ref ActiveOutput? active)
+    private void ProcessAudioFinished(
+        AudioFinished finished,
+        AudioCodecProfile profile,
+        ref ActiveOutput? active)
     {
         if (active is null)
         {
             active = new ActiveOutput(
                 finished.Identity,
                 finished.Epoch,
-                AudioResampler.CreatePcm16(RealtimeSampleRate, SipSampleRate),
+                profile,
                 _workerCancellation.Token);
         }
         else if (active.Identity != finished.Identity)
@@ -482,8 +501,11 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
 
         short[] flushed = active.Resampler.Process(Array.Empty<short>(), endOfInput: true);
-        long expectedOutput = (active.TotalRealtimeSamplesReceived + 2) / 3;
-        long requiredFlush = expectedOutput - active.TotalSipSamplesProduced;
+        long expectedOutput = ConvertSampleCountCeiling(
+            active.TotalRealtimeSamplesReceived,
+            RealtimeSampleRate,
+            profile.PcmSampleRate);
+        long requiredFlush = expectedOutput - active.TotalMediaSamplesProduced;
         if (requiredFlush < 0)
         {
             throw new InvalidDataException(
@@ -503,7 +525,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         {
             active.WriteFrames(flushed);
         }
-        active.TotalSipSamplesProduced += flushed.Length;
+        active.TotalMediaSamplesProduced += flushed.Length;
         active.IsFinal = true;
 
         if (!active.PlaybackStarted)
@@ -528,7 +550,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
 
         TimeSpan playedAudio = TimeSpan.FromSeconds(
-            interrupt.Cursor.RealSipSamplesEmitted / (double)SipSampleRate);
+            interrupt.Cursor.RealMediaSamplesEmitted / (double)interrupt.Cursor.PcmSampleRate);
         await session.TruncateOutputItemAsync(
             interrupt.Cursor.ItemId,
             interrupt.Cursor.ContentIndex,
@@ -580,11 +602,12 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 return true;
             }
 
-            short[] packet = new short[SipSamplesPerPacket];
+            AudioCodecProfile profile = current.Profile;
+            short[] packet = new short[profile.PcmSamplesPerPacket];
             int realSamples;
-            if (current.PendingFrameCount >= SipSamplesPerPacket)
+            if (current.PendingFrameCount >= profile.PcmSamplesPerPacket)
             {
-                realSamples = SipSamplesPerPacket;
+                realSamples = profile.PcmSamplesPerPacket;
                 current.ReadFrames(packet);
             }
             else if (current.IsFinal)
@@ -600,12 +623,12 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 realSamples = 0;
             }
 
-            AudioFormat selectedFormat = GetSelectedSourceFormat();
-            byte[] encoded = _encoder.EncodeAudio(packet, selectedFormat);
-            if (encoded.Length != SipSamplesPerPacket)
+            byte[] encoded = _encoder.EncodeAudio(packet, profile.Format);
+            if (encoded.Length != profile.EncodedBytesPerPacket)
             {
                 throw new InvalidDataException(
-                    $"The {selectedFormat.FormatName} encoder returned {encoded.Length} bytes for a 20 ms packet.");
+                    $"The {profile.Format.FormatName} encoder returned {encoded.Length} bytes for a 20 ms packet; " +
+                    $"{profile.EncodedBytesPerPacket} were expected.");
             }
 
             bool completesResponse = current.IsFinal && current.PendingFrameCount == 0;
@@ -614,12 +637,19 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 ScheduleNextPacket(current);
             }
 
-            OnAudioSourceEncodedSample?.Invoke(SipSamplesPerPacket, encoded);
+            OnAudioSourceEncodedSample?.Invoke(profile.RtpUnitsPerPacket, encoded);
 
             if (realSamples > 0)
             {
-                current.TotalRealSipSamplesEmitted += realSamples;
-                long release = Math.Min(current.ReservedRealtimeSamples, realSamples * 3L);
+                current.TotalRealMediaSamplesEmitted += realSamples;
+                long targetReleased = Math.Min(
+                    current.TotalRealtimeSamplesReceived,
+                    ConvertSampleCountFloor(
+                        current.TotalRealMediaSamplesEmitted,
+                        profile.PcmSampleRate,
+                        RealtimeSampleRate));
+                long release = targetReleased - current.ReleasedRealtimeSamples;
+                current.ReleasedRealtimeSamples = targetReleased;
                 current.ReservedRealtimeSamples -= release;
                 ReleaseOutputBudget(release);
                 PublishPlaybackCursor(current);
@@ -648,17 +678,23 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             _workerCancellation.Token);
     }
 
-    private void EmitIdleSilence(ref long nextIdlePacketTimestamp, ref Task? idlePacketDeadlineTask)
+    private void EmitIdleSilence(
+        AudioCodecProfile profile,
+        ref long nextIdlePacketTimestamp,
+        ref Task? idlePacketDeadlineTask)
     {
         lock (_playbackGate)
         {
-            byte[] encoded = _encoder.EncodeAudio(new short[SipSamplesPerPacket], GetSelectedSourceFormat());
-            if (encoded.Length != SipSamplesPerPacket)
+            byte[] encoded = _encoder.EncodeAudio(
+                new short[profile.PcmSamplesPerPacket],
+                profile.Format);
+            if (encoded.Length != profile.EncodedBytesPerPacket)
             {
-                throw new InvalidDataException("The G.711 encoder returned an invalid silence packet length.");
+                throw new InvalidDataException(
+                    $"The {profile.Format.FormatName} encoder returned an invalid silence packet length.");
             }
 
-            OnAudioSourceEncodedSample?.Invoke(SipSamplesPerPacket, encoded);
+            OnAudioSourceEncodedSample?.Invoke(profile.RtpUnitsPerPacket, encoded);
             long now = _timeProvider.GetTimestamp();
             TimeSpan lateness = now >= nextIdlePacketTimestamp
                 ? _timeProvider.GetElapsedTime(nextIdlePacketTimestamp, now)
@@ -702,6 +738,20 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             ? TimeSpan.Zero
             : _timeProvider.GetElapsedTime(now, timestamp);
     }
+
+    private static long ConvertSampleCountCeiling(
+        long sampleCount,
+        int sourceSampleRate,
+        int destinationSampleRate)
+        => checked(
+            (sampleCount * destinationSampleRate + sourceSampleRate - 1) /
+            sourceSampleRate);
+
+    private static long ConvertSampleCountFloor(
+        long sampleCount,
+        int sourceSampleRate,
+        int destinationSampleRate)
+        => checked(sampleCount * destinationSampleRate / sourceSampleRate);
 
     private void HandleMediaUpdate(RealtimeAgentMediaUpdate update)
     {
@@ -749,7 +799,8 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         int samples = pcm.Length / sizeof(short);
         if (!TryReserveOutputBudget(samples))
         {
-            SignalOutputOverflow("Realtime output exceeded the 30 second playback budget.");
+            SignalOutputOverflow(
+                $"Realtime output exceeded the {OutputMaxDurationSeconds} second playback budget.");
             return;
         }
 
@@ -831,7 +882,13 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
             if (_playbackCursor is null)
             {
-                _playbackCursor = new PlaybackCursor(identity, _epoch, 0, isFinal);
+                AudioCodecProfile profile = _startedProfile ?? _formats.SelectedProfile;
+                _playbackCursor = new PlaybackCursor(
+                    identity,
+                    _epoch,
+                    0,
+                    profile.PcmSampleRate,
+                    isFinal);
             }
             else if (_playbackCursor.Identity == identity)
             {
@@ -856,7 +913,8 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             {
                 _playbackCursor = _playbackCursor with
                 {
-                    RealSipSamplesEmitted = active.TotalRealSipSamplesEmitted,
+                    RealMediaSamplesEmitted = active.TotalRealMediaSamplesEmitted,
+                    PcmSampleRate = active.Profile.PcmSampleRate,
                     IsFinal = _playbackCursor.IsFinal || active.IsFinal,
                 };
             }
@@ -981,14 +1039,6 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         }
     }
 
-    private AudioFormat GetSelectedSourceFormat()
-    {
-        lock (_gate)
-        {
-            return _formats.SelectedFormat;
-        }
-    }
-
     private IRealtimeAgentSession GetSession()
     {
         lock (_gate)
@@ -1060,7 +1110,8 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
     private sealed record PlaybackCursor(
         RealtimeOutputIdentity Identity,
         long Epoch,
-        long RealSipSamplesEmitted,
+        long RealMediaSamplesEmitted,
+        int PcmSampleRate,
         bool IsFinal)
     {
         public string ItemId => Identity.ItemId;
@@ -1074,14 +1125,16 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 
         public RealtimeOutputIdentity Identity { get; }
         public long Epoch { get; }
+        public AudioCodecProfile Profile { get; }
         public AudioResampler Resampler { get; }
         public CancellationTokenSource PacingCancellation { get; }
         public IPcm16FrameInput PendingSipInput { get; }
         public IPcm16FrameOutput PendingSipOutput { get; }
         public int PendingFrameCount => PendingSipOutput.Count;
         public long TotalRealtimeSamplesReceived { get; set; }
-        public long TotalSipSamplesProduced { get; set; }
-        public long TotalRealSipSamplesEmitted { get; set; }
+        public long TotalMediaSamplesProduced { get; set; }
+        public long TotalRealMediaSamplesEmitted { get; set; }
+        public long ReleasedRealtimeSamples { get; set; }
         public long ReservedRealtimeSamples { get; set; }
         public int RealtimeSamplesWithoutOutput { get; set; }
         public bool IsFinal { get; set; }
@@ -1092,20 +1145,23 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         public ActiveOutput(
             RealtimeOutputIdentity identity,
             long epoch,
-            AudioResampler resampler,
+            AudioCodecProfile profile,
             CancellationToken cancellationToken)
         {
             Identity = identity;
             Epoch = epoch;
-            Resampler = resampler;
+            Profile = profile;
+            Resampler = AudioResampler.CreatePcm16(
+                RealtimeSampleRate,
+                profile.PcmSampleRate);
             PacingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _pendingSipAudio = AudioStreamBuffer.CreateForDuration(
                 new APcmFormat(
                     ASampleValueFormat.S16,
-                    SipSampleRate,
+                    profile.PcmSampleRate,
                     1,
                     byteOrder: AByteOrder.LittleEndian),
-                TimeSpan.FromSeconds(30));
+                TimeSpan.FromSeconds(OutputMaxDurationSeconds));
             PendingSipInput = _pendingSipAudio.Input.Pcm16Frames
                 ?? throw new InvalidOperationException(
                     "The pending SIP audio buffer is not PCM16-compatible.");

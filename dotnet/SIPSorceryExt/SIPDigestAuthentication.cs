@@ -12,7 +12,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using SIPSorcery.SIP;
-using SIPSorcery.Sys;
 
 namespace SIPSorceryExt;
 

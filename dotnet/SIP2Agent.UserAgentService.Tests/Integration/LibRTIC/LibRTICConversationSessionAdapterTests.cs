@@ -3,7 +3,6 @@ using DotBase.Event;
 using LibRTIC.Config;
 using LibRTIC.Conversation;
 using LibRTIC.MiniTaskLib;
-using LibRTIC.MiniTaskLib.Base;
 using LibRTIC.MiniTaskLib.Events;
 using Microsoft.Extensions.Logging.Abstractions;
 using SIP2Agent.UserAgentService.Integration.LibRTIC;

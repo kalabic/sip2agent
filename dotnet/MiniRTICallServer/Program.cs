@@ -27,7 +27,6 @@ using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
 using SIPSorcery.Sys;
 using SIPSorceryMedia.Abstractions;
-using LibRTIC.MiniTaskLib;
 using SIP2Agent.UserAgentService.Service;
 
 namespace MiniRTICallServer

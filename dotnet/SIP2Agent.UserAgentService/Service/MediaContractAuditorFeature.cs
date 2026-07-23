@@ -8,7 +8,6 @@ using Microsoft.Extensions.Logging;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
-using SIPSorcery.SIP.App;
 using SIPSorceryMedia.Abstractions;
 
 #if MEDIA_AUDITOR_ENABLED

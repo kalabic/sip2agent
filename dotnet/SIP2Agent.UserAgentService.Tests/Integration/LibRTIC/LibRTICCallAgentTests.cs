@@ -7,7 +7,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 using SIP2Agent.UserAgentService.Integration.LibRTIC;
 using SIP2Agent.UserAgentService.Service;
 using SIPSorcery.Net;
-using SIPSorcery.SIP;
 using SIPSorcery.Sys;
 using System.Net;
 using Xunit;

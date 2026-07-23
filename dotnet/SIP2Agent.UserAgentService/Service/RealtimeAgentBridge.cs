@@ -1,15 +1,12 @@
 using AudioFormatLib.IO;
 using Microsoft.Extensions.Logging;
-using SIPSorcery.Media;
 using SIPSorceryMedia.Abstractions;
 
 namespace SIP2Agent.UserAgentService.Service;
 
 internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposable
 {
-    internal const int SIP_SAMPLE_RATE = RealtimeAssistantAudioSource.SipSampleRate;
     internal const int REALTIME_SAMPLE_RATE = RealtimeAssistantAudioSource.RealtimeSampleRate;
-    internal const int SIP_SAMPLES_PER_PACKET = RealtimeAssistantAudioSource.SipSamplesPerPacket;
     internal const int INPUT_CHANNEL_CAPACITY = RealtimeCallerAudioSink.InputChannelCapacity;
     internal const int OUTPUT_PREBUFFER_PACKETS = RealtimeAssistantAudioSource.OutputPrebufferPackets;
     internal const int OUTPUT_MAX_REALTIME_SAMPLES = RealtimeAssistantAudioSource.OutputMaxRealtimeSamples;

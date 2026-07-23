@@ -14,16 +14,16 @@ public sealed class RealtimeAgentBridgeTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
 
     [Fact]
-    public void Formats_AreG711OnlyAndRestrictionsAreIndependent()
+    public void Formats_ExposeAllSupportedCodecsAndRestrictionsAreIndependent()
     {
         using RealtimeAgentBridge endpoint = new RealtimeAgentBridge(
             NullLogger.Instance);
 
         Assert.Equal(
-            [AudioCodecsEnum.PCMU, AudioCodecsEnum.PCMA],
+            [AudioCodecsEnum.PCMU, AudioCodecsEnum.PCMA, AudioCodecsEnum.G722, AudioCodecsEnum.G729],
             endpoint.Assistant.GetAudioSourceFormats().Select(x => x.Codec));
         Assert.Equal(
-            [AudioCodecsEnum.PCMU, AudioCodecsEnum.PCMA],
+            [AudioCodecsEnum.PCMU, AudioCodecsEnum.PCMA, AudioCodecsEnum.G722, AudioCodecsEnum.G729],
             endpoint.Caller.GetAudioSinkFormats().Select(x => x.Codec));
 
         ((IAudioSource)endpoint.Assistant).RestrictFormats(
@@ -31,14 +31,55 @@ public sealed class RealtimeAgentBridgeTests
 
         Assert.Equal([AudioCodecsEnum.PCMU], endpoint.Assistant.GetAudioSourceFormats().Select(x => x.Codec));
         Assert.Equal(
-            [AudioCodecsEnum.PCMU, AudioCodecsEnum.PCMA],
+            [AudioCodecsEnum.PCMU, AudioCodecsEnum.PCMA, AudioCodecsEnum.G722, AudioCodecsEnum.G729],
             endpoint.Caller.GetAudioSinkFormats().Select(x => x.Codec));
 
         ((IAudioSink)endpoint.Caller).RestrictFormats(
             x => x.Codec == AudioCodecsEnum.G722);
 
-        Assert.Empty(endpoint.Caller.GetAudioSinkFormats());
+        Assert.Equal([AudioCodecsEnum.G722], endpoint.Caller.GetAudioSinkFormats().Select(x => x.Codec));
         Assert.Equal([AudioCodecsEnum.PCMU], endpoint.Assistant.GetAudioSourceFormats().Select(x => x.Codec));
+    }
+
+    [Theory]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMU, 8_000, 8_000, 160, 160)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMA, 8_000, 8_000, 160, 160)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722, 16_000, 8_000, 320, 160)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729, 8_000, 8_000, 160, 20)]
+    public void FormatProfiles_MatchSipsorceryCodecContracts(
+        SDPWellKnownMediaFormatsEnum formatKind,
+        int pcmSampleRate,
+        int rtpClockRate,
+        int pcmSamplesPerPacket,
+        int encodedBytesPerPacket)
+    {
+        AudioFormatNegotiation negotiation = new();
+        AudioFormat format = Format(formatKind);
+
+        negotiation.Select(format);
+        AudioCodecProfile profile = negotiation.SelectedProfile;
+
+        Assert.True(AudioFormatNegotiation.AreEquivalent(format, profile.Format));
+        Assert.Equal(pcmSampleRate, profile.PcmSampleRate);
+        Assert.Equal(rtpClockRate, profile.RtpClockRate);
+        Assert.Equal(pcmSamplesPerPacket, profile.PcmSamplesPerPacket);
+        Assert.Equal(160u, profile.RtpUnitsPerPacket);
+        Assert.Equal(encodedBytesPerPacket, profile.EncodedBytesPerPacket);
+    }
+
+    [Fact]
+    public void FormatProfiles_RejectIncorrectClockAndChannelMetadata()
+    {
+        AudioFormat incorrectMediaClock = Format(SDPWellKnownMediaFormatsEnum.G722);
+        incorrectMediaClock.ClockRate = 8_000;
+        AudioFormat incorrectRtpClock = Format(SDPWellKnownMediaFormatsEnum.G722);
+        incorrectRtpClock.RtpClockRate = 16_000;
+        AudioFormat stereo = Format(SDPWellKnownMediaFormatsEnum.G729);
+        stereo.ChannelCount = 2;
+
+        Assert.Throws<ArgumentException>(() => AudioFormatNegotiation.GetProfile(incorrectMediaClock));
+        Assert.Throws<ArgumentException>(() => AudioFormatNegotiation.GetProfile(incorrectRtpClock));
+        Assert.Throws<ArgumentException>(() => AudioFormatNegotiation.GetProfile(stereo));
     }
 
     [Fact]
@@ -50,7 +91,7 @@ public sealed class RealtimeAgentBridgeTests
         endpoint.Assistant.ExternalAudioSourceRawSample(
             AudioSamplingRatesEnum.Rate8KHz,
             20,
-            new short[RealtimeAgentBridge.SIP_SAMPLES_PER_PACKET]);
+            new short[160]);
 #pragma warning disable CS0618
         endpoint.Caller.GotAudioRtp(
             new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1234),
@@ -87,20 +128,24 @@ public sealed class RealtimeAgentBridgeTests
     }
 
     [Fact]
-    public async Task InvalidFormat_BeforeWorkerStartThrowsArgumentException()
+    public async Task UnsupportedOrIncorrectFormat_BeforeWorkerStartThrowsArgumentException()
     {
         await using RealtimeAgentBridge endpoint = new RealtimeAgentBridge(
             NullLogger.Instance);
+        AudioFormat incorrectG722 = Format(SDPWellKnownMediaFormatsEnum.G722);
+        incorrectG722.ClockRate = 8_000;
 
         Assert.Throws<ArgumentException>(
-            () => endpoint.Assistant.SetAudioSourceFormat(Format(SDPWellKnownMediaFormatsEnum.G722)));
+            () => endpoint.Assistant.SetAudioSourceFormat(Format(SDPWellKnownMediaFormatsEnum.GSM)));
         Assert.Throws<ArgumentException>(
-            () => endpoint.Caller.SetAudioSinkFormat(Format(SDPWellKnownMediaFormatsEnum.G722)));
+            () => endpoint.Caller.SetAudioSinkFormat(incorrectG722));
     }
 
     [Theory]
     [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
     [InlineData(SDPWellKnownMediaFormatsEnum.PCMA)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729)]
     public async Task Input_DecodesFrameCodecIndependentlyAndWritesCallerAudioBuffer(
         SDPWellKnownMediaFormatsEnum incomingCodec)
     {
@@ -115,8 +160,9 @@ public sealed class RealtimeAgentBridgeTests
         endpoint.Caller.SetAudioSinkFormat(incomingFormat);
         await endpoint.Caller.StartAudioSink();
 
-        using AudioEncoder codec = new([incomingFormat, outputFormat]);
-        byte[] frame = codec.EncodeAudio(CreateRamp(160), incomingFormat);
+        AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(incomingFormat);
+        using AudioEncoder codec = new(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
+        byte[] frame = codec.EncodeAudio(CreateRamp(profile.PcmSamplesPerPacket), incomingFormat);
         endpoint.Caller.GotEncodedMediaFrame(
             new EncodedAudioFrame(0, incomingFormat, 20, frame));
 
@@ -126,25 +172,64 @@ public sealed class RealtimeAgentBridgeTests
         Assert.Equal(0, endpoint.DroppedInputFrameCount);
     }
 
-    [Fact]
-    public async Task Input_VariableFrameLengthsProduceContinuousCallerAudio()
+    [Theory]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729)]
+    public async Task Input_VariableFrameLengthsProduceContinuousCallerAudio(
+        SDPWellKnownMediaFormatsEnum formatKind)
     {
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation);
-        AudioFormat pcmu = Format(SDPWellKnownMediaFormatsEnum.PCMU);
+        AudioFormat format = Format(formatKind);
+        AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(format);
+        endpoint.Caller.SetAudioSinkFormat(format);
         await endpoint.Caller.StartAudioSink();
 
-        using AudioEncoder codec = new([pcmu, Format(SDPWellKnownMediaFormatsEnum.PCMA)]);
-        byte[] halfFrame = codec.EncodeAudio(CreateRamp(80), pcmu);
+        using AudioEncoder codec = new(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
+        byte[] halfFrame = codec.EncodeAudio(
+            CreateRamp(profile.PcmSamplesPerPacket / 2),
+            format);
         for (int index = 0; index < 3; index++)
         {
             endpoint.Caller.GotEncodedMediaFrame(
-                new EncodedAudioFrame(0, pcmu, 10, halfFrame));
+                new EncodedAudioFrame(0, format, 10, halfFrame));
         }
 
         short[] buffered = await ReadCallerAudioAsync(endpoint, minimumFrames: 480);
 
         Assert.True(buffered.Length >= 480);
+    }
+
+    [Fact]
+    public async Task Input_MediaClockChangeRecreatesResampler()
+    {
+        FakeRealtimeAudioSession conversation = new();
+        await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation);
+        AudioFormat pcmu = Format(SDPWellKnownMediaFormatsEnum.PCMU);
+        AudioFormat g722 = Format(SDPWellKnownMediaFormatsEnum.G722);
+        await endpoint.Caller.StartAudioSink();
+
+        using AudioEncoder codec = new(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
+        endpoint.Caller.GotEncodedMediaFrame(
+            new EncodedAudioFrame(
+                0,
+                pcmu,
+                20,
+                codec.EncodeAudio(CreateRamp(160), pcmu)));
+        short[] pcmuAudio = await ReadCallerAudioAsync(endpoint);
+
+        endpoint.Caller.GotEncodedMediaFrame(
+            new EncodedAudioFrame(
+                0,
+                g722,
+                20,
+                codec.EncodeAudio(CreateRamp(320), g722)));
+        short[] g722Audio = await ReadCallerAudioAsync(endpoint);
+
+        Assert.NotEmpty(pcmuAudio);
+        Assert.NotEmpty(g722Audio);
+        Assert.False(endpoint.Completion.IsCompleted);
     }
 
     [Fact]
@@ -193,19 +278,20 @@ public sealed class RealtimeAgentBridgeTests
     }
 
     [Fact]
-    public async Task Input_MalformedFrameFaultsCompletionWithoutEscapingCallback()
+    public async Task Input_IncompleteG729FrameFaultsCompletionWithoutEscapingCallback()
     {
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation);
+        AudioFormat g729 = Format(SDPWellKnownMediaFormatsEnum.G729);
+        endpoint.Caller.SetAudioSinkFormat(g729);
         await endpoint.Caller.StartAudioSink();
-        AudioFormat g722 = Format(SDPWellKnownMediaFormatsEnum.G722);
 
         Exception? callbackException = Record.Exception(
             () => endpoint.Caller.GotEncodedMediaFrame(
-                new EncodedAudioFrame(0, g722, 20, new byte[160])));
+                new EncodedAudioFrame(0, g729, 20, new byte[11])));
 
         Assert.Null(callbackException);
-        await Assert.ThrowsAsync<ArgumentException>(
+        await Assert.ThrowsAsync<InvalidDataException>(
             () => endpoint.Completion.WaitAsync(TestTimeout));
         Assert.True(conversation.CancelCount >= 1);
     }
@@ -236,12 +322,20 @@ public sealed class RealtimeAgentBridgeTests
         Assert.True(conversation.CancelCount >= 1);
     }
 
-    [Fact]
-    public async Task Output_TwoHundredMillisecondsEmitsTenPacedPacketsThenIdleSilence()
+    [Theory]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMA)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729)]
+    public async Task Output_TwoHundredMillisecondsEmitsTenCodecCorrectPacedPacketsThenIdleSilence(
+        SDPWellKnownMediaFormatsEnum formatKind)
     {
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation, time);
+        AudioFormat format = Format(formatKind);
+        AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(format);
+        endpoint.Assistant.SetAudioSourceFormat(format);
         PacketCollector packets = new(time);
         endpoint.Assistant.OnAudioSourceEncodedSample += packets.Handle;
         await endpoint.Assistant.StartAudio();
@@ -261,13 +355,21 @@ public sealed class RealtimeAgentBridgeTests
 
         Assert.Equal(10, received.Count);
         Assert.True(packets.TryRead(out Packet? idle));
-        using AudioEncoder codec = new([Format(SDPWellKnownMediaFormatsEnum.PCMU)]);
-        Assert.Equal(codec.EncodeAudio(new short[160], Format(SDPWellKnownMediaFormatsEnum.PCMU)), idle!.Payload);
+        Assert.Equal(profile.EncodedBytesPerPacket, idle!.Payload.Length);
         Assert.All(received, packet =>
         {
-            Assert.Equal(160u, packet.DurationRtpUnits);
-            Assert.Equal(160, packet.Payload.Length);
+            Assert.Equal(profile.RtpUnitsPerPacket, packet.DurationRtpUnits);
+            Assert.Equal(profile.EncodedBytesPerPacket, packet.Payload.Length);
         });
+        using AudioEncoder decoder = new(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
+        foreach (Packet packet in received.Append(idle))
+        {
+            short[] decoded = decoder.DecodeAudio(packet.Payload, format);
+            AudioFormatNegotiation.ValidateDecodedPayload(
+                profile,
+                packet.Payload.Length,
+                decoded.Length);
+        }
         for (int index = 1; index < received.Count; index++)
         {
             Assert.Equal(
@@ -301,12 +403,20 @@ public sealed class RealtimeAgentBridgeTests
         _ = await packets.ReadAsync();
     }
 
-    [Fact]
-    public async Task Output_ShortFinalResponsePadsThenContinuesSilenceUntilNewResponse()
+    [Theory]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMA)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729)]
+    public async Task Output_ShortFinalResponsePadsCodecPacketThenContinuesSilence(
+        SDPWellKnownMediaFormatsEnum formatKind)
     {
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation, time);
+        AudioFormat format = Format(formatKind);
+        AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(format);
+        endpoint.Assistant.SetAudioSourceFormat(format);
         PacketCollector packets = new(time);
         endpoint.Assistant.OnAudioSourceEncodedSample += packets.Handle;
         await endpoint.Assistant.StartAudio();
@@ -320,12 +430,20 @@ public sealed class RealtimeAgentBridgeTests
         time.Advance(TimeSpan.FromMilliseconds(20));
         Packet secondIdle = await packets.ReadAsync();
 
-        Assert.Equal(160u, packet.DurationRtpUnits);
-        Assert.Equal(160, packet.Payload.Length);
-        using AudioEncoder codec = new([Format(SDPWellKnownMediaFormatsEnum.PCMU)]);
-        byte[] silence = codec.EncodeAudio(new short[160], Format(SDPWellKnownMediaFormatsEnum.PCMU));
-        Assert.Equal(silence, firstIdle.Payload);
-        Assert.Equal(silence, secondIdle.Payload);
+        Assert.All([packet, firstIdle, secondIdle], emitted =>
+        {
+            Assert.Equal(profile.RtpUnitsPerPacket, emitted.DurationRtpUnits);
+            Assert.Equal(profile.EncodedBytesPerPacket, emitted.Payload.Length);
+        });
+        using AudioEncoder decoder = new(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
+        foreach (Packet emitted in new[] { packet, firstIdle, secondIdle })
+        {
+            short[] decoded = decoder.DecodeAudio(emitted.Payload, format);
+            AudioFormatNegotiation.ValidateDecodedPayload(
+                profile,
+                emitted.Payload.Length,
+                decoded.Length);
+        }
         Assert.Equal(0, endpoint.UnplayedRealtimeSampleCount);
     }
 
@@ -369,7 +487,9 @@ public sealed class RealtimeAgentBridgeTests
     [Theory]
     [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
     [InlineData(SDPWellKnownMediaFormatsEnum.PCMA)]
-    public async Task Output_CodecSilenceIsAlwaysOneG711Packet(
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729)]
+    public async Task Output_CodecUnderrunUsesProfilePacketSize(
         SDPWellKnownMediaFormatsEnum formatKind)
     {
         FakeTimeProvider time = new();
@@ -382,19 +502,28 @@ public sealed class RealtimeAgentBridgeTests
         await endpoint.Assistant.StartAudio();
 
         conversation.RaiseDelta(CreateDelta(CreateRamp(1_440)));
-        _ = await packets.ReadAsync();
+        Packet first = await packets.ReadAsync();
         time.Advance(TimeSpan.FromMilliseconds(20));
-        _ = await packets.ReadAsync();
+        Packet second = await packets.ReadAsync();
         time.Advance(TimeSpan.FromMilliseconds(20));
         Packet underrun = await packets.ReadAsync();
 
-        using AudioEncoder codec = new([format]);
-        Assert.Equal(codec.EncodeAudio(new short[160], format), underrun.Payload);
-        Assert.Equal(160, underrun.Payload.Length);
+        AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(format);
+        using AudioEncoder decoder = new(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
+        foreach (Packet packet in new[] { first, second, underrun })
+        {
+            Assert.Equal(profile.RtpUnitsPerPacket, packet.DurationRtpUnits);
+            Assert.Equal(profile.EncodedBytesPerPacket, packet.Payload.Length);
+            short[] decoded = decoder.DecodeAudio(packet.Payload, format);
+            AudioFormatNegotiation.ValidateDecodedPayload(
+                profile,
+                packet.Payload.Length,
+                decoded.Length);
+        }
     }
 
     [Fact]
-    public async Task Output_ThirtySecondBudgetOverflowFaultsInsteadOfDropping()
+    public async Task Output_PlaybackBudgetOverflowFaultsInsteadOfDropping()
     {
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation);
@@ -445,12 +574,18 @@ public sealed class RealtimeAgentBridgeTests
         Assert.Equal("subscriber failed", exception.Message);
     }
 
-    [Fact]
-    public async Task BargeIn_StopsPlaybackCancelsAndTruncatesAtRealPlayedCursor()
+    [Theory]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G729)]
+    public async Task BargeIn_StopsPlaybackCancelsAndTruncatesAtRealPlayedCursor(
+        SDPWellKnownMediaFormatsEnum formatKind)
     {
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation, time);
+        AudioCodecProfile profile = AudioFormatNegotiation.GetProfile(Format(formatKind));
+        endpoint.Assistant.SetAudioSourceFormat(profile.Format);
         PacketCollector packets = new(time);
         endpoint.Assistant.OnAudioSourceEncodedSample += packets.Handle;
         await endpoint.Assistant.StartAudio();
@@ -473,16 +608,20 @@ public sealed class RealtimeAgentBridgeTests
         conversation.RaiseDelta(CreateDelta(CreateRamp(480)));
         time.Advance(TimeSpan.FromSeconds(1));
         Packet idle = await packets.ReadAsync();
-        using AudioEncoder codec = new([Format(SDPWellKnownMediaFormatsEnum.PCMU)]);
-        Assert.Equal(codec.EncodeAudio(new short[160], Format(SDPWellKnownMediaFormatsEnum.PCMU)), idle.Payload);
+        Assert.Equal(profile.RtpUnitsPerPacket, idle.DurationRtpUnits);
+        Assert.Equal(profile.EncodedBytesPerPacket, idle.Payload.Length);
     }
 
-    [Fact]
-    public async Task BargeIn_AfterFinalMarkerTruncatesWithoutCancellingCompletedResponse()
+    [Theory]
+    [InlineData(SDPWellKnownMediaFormatsEnum.PCMU)]
+    [InlineData(SDPWellKnownMediaFormatsEnum.G722)]
+    public async Task BargeIn_AfterFinalMarkerTruncatesWithoutCancellingCompletedResponse(
+        SDPWellKnownMediaFormatsEnum formatKind)
     {
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation, time);
+        endpoint.Assistant.SetAudioSourceFormat(Format(formatKind));
         PacketCollector packets = new(time);
         endpoint.Assistant.OnAudioSourceEncodedSample += packets.Handle;
         await endpoint.Assistant.StartAudio();
