@@ -9,14 +9,16 @@ public sealed class RealtimeAgentSessionTests
     public void OutputIdentity_ValidatesProviderIdentifiersOnceAtConstruction()
     {
         Assert.Throws<ArgumentException>(
-            () => new RealtimeOutputIdentity("", "item", 0));
+            () => new RealtimeOutputIdentity("", "item", 0, 0));
         Assert.Throws<ArgumentException>(
-            () => new RealtimeOutputIdentity("response", " ", 0));
+            () => new RealtimeOutputIdentity("response", " ", 0, 0));
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => new RealtimeOutputIdentity("response", "item", -1));
+            () => new RealtimeOutputIdentity("response", "item", -1, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new RealtimeOutputIdentity("response", "item", 0, -1));
 
         Assert.Equal(
-            new RealtimeOutputIdentity("response", "item", 3),
-            new RealtimeOutputIdentity("response", "item", 3));
+            new RealtimeOutputIdentity("response", "item", 2, 3),
+            new RealtimeOutputIdentity("response", "item", 2, 3));
     }
 }

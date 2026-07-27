@@ -226,13 +226,10 @@ public sealed class RTICCallAgentTests
             return Task.CompletedTask;
         }
 
-        public Task InterruptResponseAsync(CancellationToken cancellationToken)
-            => Task.CompletedTask;
-
-        public Task TruncateOutputItemAsync(
-            string itemId,
-            int contentIndex,
-            TimeSpan audioEndTime,
+        public Task InterruptOutputAsync(
+            RealtimeOutputIdentity identity,
+            TimeSpan playedThrough,
+            bool cancelResponseIfActive,
             CancellationToken cancellationToken)
             => Task.CompletedTask;
 

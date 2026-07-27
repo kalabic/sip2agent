@@ -1,4 +1,6 @@
+using DotBase.Event;
 using LibRTIC.Conversation;
+using LibRTIC.MiniTaskLib;
 using LibRTIC.MiniTaskLib.Events;
 using SIP2Agent.UserAgentService.Service;
 
@@ -8,7 +10,7 @@ namespace SIP2Agent.UserAgentService.Integration.LibRTIC;
 internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
 {
     private readonly object _gate = new();
-    private readonly RTIConversation _conversation;
+    private readonly ILibRTICConversation _conversation;
     private readonly TaskCompletionSource _ready =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -18,6 +20,11 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
     private int _disposed;
 
     public LibRTICConversationSessionAdapter(RTIConversation conversation)
+        : this(new LibRTICConversation(conversation))
+    {
+    }
+
+    internal LibRTICConversationSessionAdapter(ILibRTICConversation conversation)
     {
         _conversation = conversation ?? throw new ArgumentNullException(nameof(conversation));
 
@@ -48,20 +55,24 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
     }
 
     public Task StartResponseAsync(string? instructions, CancellationToken cancellationToken)
-        => _conversation.StartResponseAsync(instructions, cancellationToken);
+        => _conversation.RequestResponseAsync(
+            new RTICResponseRequest(instructions),
+            cancellationToken);
 
-    public Task InterruptResponseAsync(CancellationToken cancellationToken)
-        => _conversation.InterruptResponseAsync(cancellationToken);
-
-    public Task TruncateOutputItemAsync(
-        string itemId,
-        int contentIndex,
-        TimeSpan audioEndTime,
+    public Task InterruptOutputAsync(
+        RealtimeOutputIdentity identity,
+        TimeSpan playedThrough,
+        bool cancelResponseIfActive,
         CancellationToken cancellationToken)
-        => _conversation.TruncateOutputItemAsync(
-            itemId,
-            contentIndex,
-            audioEndTime,
+        => _conversation.InterruptOutputAsync(
+            new RTICOutputInterruption(
+                new RTICOutputCursor(
+                    identity.ResponseId,
+                    identity.ItemId,
+                    identity.OutputIndex,
+                    identity.ContentIndex),
+                playedThrough,
+                cancelResponseIfActive),
             cancellationToken);
 
     public void Cancel()
@@ -179,13 +190,70 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
 
     private void HandleEvent(object? sender, RTICOutputAudioDelta update)
         => MediaUpdate?.Invoke(new RealtimeOutputAudioDelta(
-            new RealtimeOutputIdentity(update.ResponseId, update.ItemId, update.ContentIndex),
+            new RealtimeOutputIdentity(
+                update.ResponseId,
+                update.ItemId,
+                update.OutputIndex,
+                update.ContentIndex),
             update.Audio));
 
     private void HandleEvent(object? sender, RTICOutputAudioCompleted update)
         => MediaUpdate?.Invoke(new RealtimeOutputAudioFinished(
-            new RealtimeOutputIdentity(update.ResponseId, update.ItemId, update.ContentIndex)));
+            new RealtimeOutputIdentity(
+                update.ResponseId,
+                update.ItemId,
+                update.OutputIndex,
+                update.ContentIndex)));
 
     private void HandleEvent(object? sender, RTICInputSpeechStarted update)
         => MediaUpdate?.Invoke(new RealtimeInputSpeechStarted());
+}
+
+internal interface ILibRTICConversation : IDisposable
+{
+    EventProducerCollection ConversationEvents { get; }
+
+    EventQueue UpdatesReceiverEvents { get; }
+
+    Task RunAsync();
+
+    Task RequestResponseAsync(
+        RTICResponseRequest request,
+        CancellationToken cancellationToken);
+
+    Task InterruptOutputAsync(
+        RTICOutputInterruption request,
+        CancellationToken cancellationToken);
+
+    void Cancel();
+}
+
+internal sealed class LibRTICConversation : ILibRTICConversation
+{
+    private readonly RTIConversation _conversation;
+
+    public LibRTICConversation(RTIConversation conversation)
+    {
+        _conversation = conversation ?? throw new ArgumentNullException(nameof(conversation));
+    }
+
+    public EventProducerCollection ConversationEvents => _conversation.ConversationEvents;
+
+    public EventQueue UpdatesReceiverEvents => _conversation.UpdatesReceiverEvents;
+
+    public Task RunAsync() => _conversation.RunAsync();
+
+    public Task RequestResponseAsync(
+        RTICResponseRequest request,
+        CancellationToken cancellationToken)
+        => _conversation.Control.RequestResponseAsync(request, cancellationToken);
+
+    public Task InterruptOutputAsync(
+        RTICOutputInterruption request,
+        CancellationToken cancellationToken)
+        => _conversation.Control.InterruptOutputAsync(request, cancellationToken);
+
+    public void Cancel() => _conversation.Cancel();
+
+    public void Dispose() => _conversation.Dispose();
 }

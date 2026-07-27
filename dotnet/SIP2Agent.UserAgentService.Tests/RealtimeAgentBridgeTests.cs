@@ -531,7 +531,7 @@ public sealed class RealtimeAgentBridgeTests
             (RealtimeAgentBridge.OUTPUT_MAX_REALTIME_SAMPLES + 1) * sizeof(short)];
 
         conversation.RaiseDelta(new RealtimeOutputAudioDelta(
-            new RealtimeOutputIdentity("response-1", "item-1", 0),
+            new RealtimeOutputIdentity("response-1", "item-1", 0, 0),
             tooMuchAudio));
 
         await Assert.ThrowsAsync<InvalidDataException>(() => endpoint.Completion);
@@ -545,7 +545,7 @@ public sealed class RealtimeAgentBridgeTests
         FakeRealtimeAudioSession conversation = new();
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation);
         RealtimeOutputAudioDelta delta = new(
-            new RealtimeOutputIdentity("response-1", "item-1", 0),
+            new RealtimeOutputIdentity("response-1", "item-1", 0, 0),
             new byte[sizeof(short)]);
 
         for (int index = 0; index <= RealtimeAgentBridge.OUTPUT_COMMAND_CAPACITY; index++)
@@ -594,15 +594,17 @@ public sealed class RealtimeAgentBridgeTests
         _ = await packets.ReadAsync();
 
         conversation.RaiseInputSpeechStarted();
-        TruncationRequest truncation = await conversation.Truncations.Reader
-            .ReadAsync()
+        InterruptionRequest interruption = await conversation.Interruptions.Reader
+            .ReadAsync(TestContext.Current.CancellationToken)
             .AsTask()
-            .WaitAsync(TestTimeout);
+            .WaitAsync(TestTimeout, TestContext.Current.CancellationToken);
 
-        Assert.Equal(1, conversation.InterruptResponseCount);
-        Assert.Equal("item-1", truncation.ItemId);
-        Assert.Equal(0, truncation.ContentIndex);
-        Assert.Equal(TimeSpan.FromMilliseconds(20), truncation.AudioEndTime);
+        Assert.Equal(1, conversation.InterruptOutputCount);
+        Assert.Equal(
+            new RealtimeOutputIdentity("response-1", "item-1", 0, 0),
+            interruption.Identity);
+        Assert.Equal(TimeSpan.FromMilliseconds(20), interruption.PlayedThrough);
+        Assert.True(interruption.CancelResponseIfActive);
         Assert.Equal(0, endpoint.UnplayedRealtimeSampleCount);
 
         conversation.RaiseDelta(CreateDelta(CreateRamp(480)));
@@ -631,13 +633,14 @@ public sealed class RealtimeAgentBridgeTests
         _ = await packets.ReadAsync();
 
         conversation.RaiseInputSpeechStarted();
-        TruncationRequest truncation = await conversation.Truncations.Reader
-            .ReadAsync()
+        InterruptionRequest interruption = await conversation.Interruptions.Reader
+            .ReadAsync(TestContext.Current.CancellationToken)
             .AsTask()
-            .WaitAsync(TestTimeout);
+            .WaitAsync(TestTimeout, TestContext.Current.CancellationToken);
 
-        Assert.Equal(0, conversation.InterruptResponseCount);
-        Assert.Equal(TimeSpan.FromMilliseconds(20), truncation.AudioEndTime);
+        Assert.Equal(1, conversation.InterruptOutputCount);
+        Assert.False(interruption.CancelResponseIfActive);
+        Assert.Equal(TimeSpan.FromMilliseconds(20), interruption.PlayedThrough);
     }
 
     [Fact]
@@ -646,7 +649,7 @@ public sealed class RealtimeAgentBridgeTests
         FakeTimeProvider time = new();
         FakeRealtimeAudioSession conversation = new()
         {
-            InterruptResponse = _ => throw new InvalidOperationException("interrupt failed"),
+            InterruptOutput = _ => throw new InvalidOperationException("interrupt failed"),
         };
         await using RealtimeAgentBridge endpoint = CreateEndpoint(conversation, time);
         PacketCollector packets = new(time);
@@ -746,7 +749,7 @@ public sealed class RealtimeAgentBridgeTests
             x => x.Codec == AudioCodecsEnum.PCMA);
 
         secondConversation.RaiseDelta(new RealtimeOutputAudioDelta(
-            new RealtimeOutputIdentity("response-2", "item-2", 0),
+            new RealtimeOutputIdentity("response-2", "item-2", 0, 0),
             new byte[
                 (RealtimeAgentBridge.OUTPUT_MAX_REALTIME_SAMPLES + 1) * sizeof(short)]));
 
@@ -816,18 +819,18 @@ public sealed class RealtimeAgentBridgeTests
 
     private static RealtimeOutputAudioDelta CreateDelta(short[] samples)
         => new(
-            new RealtimeOutputIdentity("response-1", "item-1", 0),
+            new RealtimeOutputIdentity("response-1", "item-1", 0, 0),
             ToPcmBytes(samples));
 
     private static RealtimeOutputAudioFinished CreateFinished()
-        => new(new RealtimeOutputIdentity("response-1", "item-1", 0));
+        => new(new RealtimeOutputIdentity("response-1", "item-1", 0, 0));
 
     private sealed record Packet(long Timestamp, uint DurationRtpUnits, byte[] Payload);
 
-    private sealed record TruncationRequest(
-        string ItemId,
-        int ContentIndex,
-        TimeSpan AudioEndTime);
+    private sealed record InterruptionRequest(
+        RealtimeOutputIdentity Identity,
+        TimeSpan PlayedThrough,
+        bool CancelResponseIfActive);
 
     private sealed class PacketCollector(FakeTimeProvider timeProvider)
     {
@@ -864,15 +867,15 @@ public sealed class RealtimeAgentBridgeTests
             }
         }
 
-        public Channel<TruncationRequest> Truncations { get; } =
-            Channel.CreateUnbounded<TruncationRequest>();
-        public Func<CancellationToken, Task>? InterruptResponse { get; init; }
+        public Channel<InterruptionRequest> Interruptions { get; } =
+            Channel.CreateUnbounded<InterruptionRequest>();
+        public Func<CancellationToken, Task>? InterruptOutput { get; init; }
         public Task Ready => Task.CompletedTask;
         public int MediaUpdateSubscriberCount { get; private set; }
         public int AudioDeltaSubscriberCount => MediaUpdateSubscriberCount;
         public int AudioFinishedSubscriberCount => MediaUpdateSubscriberCount;
         public int InputSpeechSubscriberCount => MediaUpdateSubscriberCount;
-        public int InterruptResponseCount { get; private set; }
+        public int InterruptOutputCount { get; private set; }
         public int CancelCount { get; private set; }
 
         public Task RunAsync() => Task.CompletedTask;
@@ -885,23 +888,24 @@ public sealed class RealtimeAgentBridgeTests
             return Task.CompletedTask;
         }
 
-        public Task InterruptResponseAsync(CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            InterruptResponseCount++;
-            return InterruptResponse?.Invoke(cancellationToken) ?? Task.CompletedTask;
-        }
-
-        public Task TruncateOutputItemAsync(
-            string itemId,
-            int contentIndex,
-            TimeSpan audioEndTime,
+        public async Task InterruptOutputAsync(
+            RealtimeOutputIdentity identity,
+            TimeSpan playedThrough,
+            bool cancelResponseIfActive,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Truncations.Writer.WriteAsync(
-                new TruncationRequest(itemId, contentIndex, audioEndTime),
-                cancellationToken).AsTask();
+            InterruptOutputCount++;
+            if (InterruptOutput is not null)
+            {
+                await InterruptOutput(cancellationToken);
+            }
+            await Interruptions.Writer.WriteAsync(
+                new InterruptionRequest(
+                    identity,
+                    playedThrough,
+                    cancelResponseIfActive),
+                cancellationToken);
         }
 
         public void Cancel() => CancelCount++;

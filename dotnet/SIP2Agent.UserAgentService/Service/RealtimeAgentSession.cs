@@ -6,16 +6,24 @@ internal readonly record struct RealtimeOutputIdentity
 
     public string ItemId { get; }
 
+    public int OutputIndex { get; }
+
     public int ContentIndex { get; }
 
-    public RealtimeOutputIdentity(string responseId, string itemId, int contentIndex)
+    public RealtimeOutputIdentity(
+        string responseId,
+        string itemId,
+        int outputIndex,
+        int contentIndex)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(responseId);
         ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
+        ArgumentOutOfRangeException.ThrowIfNegative(outputIndex);
         ArgumentOutOfRangeException.ThrowIfNegative(contentIndex);
 
         ResponseId = responseId;
         ItemId = itemId;
+        OutputIndex = outputIndex;
         ContentIndex = contentIndex;
     }
 }
@@ -49,12 +57,10 @@ internal interface IRealtimeAgentSession : IDisposable
         string? instructions,
         CancellationToken cancellationToken);
 
-    Task InterruptResponseAsync(CancellationToken cancellationToken);
-
-    Task TruncateOutputItemAsync(
-        string itemId,
-        int contentIndex,
-        TimeSpan audioEndTime,
+    Task InterruptOutputAsync(
+        RealtimeOutputIdentity identity,
+        TimeSpan playedThrough,
+        bool cancelResponseIfActive,
         CancellationToken cancellationToken);
 
     void Cancel();

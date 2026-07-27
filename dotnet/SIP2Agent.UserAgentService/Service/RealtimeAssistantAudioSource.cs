@@ -544,17 +544,12 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         CancellationToken cancellationToken)
     {
         IRealtimeAgentSession session = GetSession();
-        if (!interrupt.Cursor.IsFinal)
-        {
-            await session.InterruptResponseAsync(cancellationToken).ConfigureAwait(false);
-        }
-
         TimeSpan playedAudio = TimeSpan.FromSeconds(
             interrupt.Cursor.RealMediaSamplesEmitted / (double)interrupt.Cursor.PcmSampleRate);
-        await session.TruncateOutputItemAsync(
-            interrupt.Cursor.ItemId,
-            interrupt.Cursor.ContentIndex,
+        await session.InterruptOutputAsync(
+            interrupt.Cursor.Identity,
             playedAudio,
+            cancelResponseIfActive: !interrupt.Cursor.IsFinal,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1112,12 +1107,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
         long Epoch,
         long RealMediaSamplesEmitted,
         int PcmSampleRate,
-        bool IsFinal)
-    {
-        public string ItemId => Identity.ItemId;
-
-        public int ContentIndex => Identity.ContentIndex;
-    }
+        bool IsFinal);
 
     private sealed class ActiveOutput : IDisposable
     {

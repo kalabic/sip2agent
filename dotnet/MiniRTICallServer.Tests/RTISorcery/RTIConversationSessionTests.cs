@@ -1,11 +1,10 @@
-using AudioFormatLib.IO;
 using DotBase.Event;
-using LibRTIC.Config;
 using LibRTIC.Conversation;
 using LibRTIC.MiniTaskLib;
 using LibRTIC.MiniTaskLib.Events;
 using Microsoft.Extensions.Logging.Abstractions;
 using MiniRTICallServer.RTISorcery;
+using SIP2Agent.UserAgentService.Integration.LibRTIC;
 using SIP2Agent.UserAgentService.Service;
 using Xunit;
 
@@ -33,32 +32,33 @@ public sealed class RTIConversationSessionTests
         RealtimeOutputAudioFinished finished =
             Assert.IsType<RealtimeOutputAudioFinished>(updates[1]);
         Assert.IsType<RealtimeInputSpeechStarted>(updates[2]);
-        Assert.Equal(new RealtimeOutputIdentity("response-7", "item-9", 3), delta.Identity);
+        Assert.Equal(
+            new RealtimeOutputIdentity("response-7", "item-9", 0, 3),
+            delta.Identity);
         Assert.Equal(pcm, delta.Pcm16LittleEndian.ToArray());
         Assert.Equal(delta.Identity, finished.Identity);
     }
 
     [Fact]
-    public async Task Commands_ForwardDirectlyToConversation()
+    public async Task Commands_MapToComposedConversationControl()
     {
         RecordingConversation conversation = new();
         using RTIConversationSession session = new(conversation);
         using CancellationTokenSource cancellation = new();
+        RealtimeOutputIdentity identity = new("response-3", "item-4", 1, 2);
 
         await session.StartResponseAsync("hello", cancellation.Token);
-        await session.InterruptResponseAsync(cancellation.Token);
-        await session.TruncateOutputItemAsync(
-            "item-4",
-            2,
+        await session.InterruptOutputAsync(
+            identity,
             TimeSpan.FromMilliseconds(340),
+            cancelResponseIfActive: true,
             cancellation.Token);
         session.Cancel();
 
         Assert.Equal(("hello", cancellation.Token), conversation.Response);
-        Assert.Equal(cancellation.Token, conversation.InterruptToken);
         Assert.Equal(
-            ("item-4", 2, TimeSpan.FromMilliseconds(340), cancellation.Token),
-            conversation.Truncation);
+            (identity, TimeSpan.FromMilliseconds(340), true, cancellation.Token),
+            conversation.Interruption);
         Assert.Equal(1, conversation.CancelCount);
     }
 
@@ -151,7 +151,7 @@ public sealed class RTIConversationSessionTests
     private static RTICSessionInfo SessionInfo()
         => new(null, null, [], null);
 
-    private sealed class RecordingConversation : RTIConversation
+    private sealed class RecordingConversation : ILibRTICConversation
     {
         private readonly RTIConversation _eventHost = RTIConversationTask.Create(
             new MicrosoftInfoLog(NullLogger.Instance),
@@ -159,15 +159,17 @@ public sealed class RTIConversationSessionTests
         private readonly TaskCompletionSource _run =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override EventProducerCollection ConversationEvents =>
+        public EventProducerCollection ConversationEvents =>
             _eventHost.ConversationEvents;
-        public override EventQueue UpdatesReceiverEvents =>
+        public EventQueue UpdatesReceiverEvents =>
             _eventHost.UpdatesReceiverEvents;
         public int RunCount { get; private set; }
         public (string? Instructions, CancellationToken CancellationToken)? Response { get; private set; }
-        public CancellationToken InterruptToken { get; private set; }
-        public (string ItemId, int ContentIndex, TimeSpan AudioEndTime, CancellationToken CancellationToken)?
-            Truncation { get; private set; }
+        public (
+            RealtimeOutputIdentity Identity,
+            TimeSpan PlayedThrough,
+            bool CancelResponseIfActive,
+            CancellationToken CancellationToken)? Interruption { get; private set; }
         public int CancelCount { get; private set; }
 
         public void RaiseConversationEvent<T>(T update) where T : class
@@ -180,70 +182,44 @@ public sealed class RTIConversationSessionTests
 
         public void FailRun(Exception exception) => _run.TrySetException(exception);
 
-        public override void ConfigureWith(
-            RTICConfig options,
-            IPcm16FrameOutput audioOutputFrames)
-            => throw new NotSupportedException();
-
-        public override void Run() => throw new NotSupportedException();
-
-        public override Task RunAsync()
+        public Task RunAsync()
         {
             RunCount++;
             return _run.Task;
         }
 
-        public override Task StartResponseAsync(
-            string? instructions,
+        public Task RequestResponseAsync(
+            RTICResponseRequest request,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Response = (instructions, cancellationToken);
+            Response = (request.Instructions, cancellationToken);
             return Task.CompletedTask;
         }
 
-        public override Task InterruptResponseAsync(CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            InterruptToken = cancellationToken;
-            return Task.CompletedTask;
-        }
-
-        public override Task TruncateOutputItemAsync(
-            string itemId,
-            int contentIndex,
-            TimeSpan audioEndTime,
+        public Task InterruptOutputAsync(
+            RTICOutputInterruption request,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Truncation = (itemId, contentIndex, audioEndTime, cancellationToken);
+            Interruption = (
+                new RealtimeOutputIdentity(
+                    request.Cursor.ResponseId,
+                    request.Cursor.ItemId,
+                    request.Cursor.OutputIndex,
+                    request.Cursor.ContentIndex),
+                request.PlayedThrough,
+                request.CancelResponseIfActive,
+                cancellationToken);
             return Task.CompletedTask;
         }
 
-        public override TaskWithEvents? GetAwaiter() => null;
-
-        public override void Cancel()
+        public void Cancel()
         {
             CancelCount++;
             _run.TrySetResult();
         }
 
-        public override List<TaskWithEvents> GetTaskList() => [];
-
-        public override void Await()
-        {
-        }
-
-        public override Task AwaitAsync(CancellationToken finalCancellation)
-            => Task.CompletedTask;
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                _eventHost.Dispose();
-            }
-            base.Dispose(disposing);
-        }
+        public void Dispose() => _eventHost.Dispose();
     }
 }
