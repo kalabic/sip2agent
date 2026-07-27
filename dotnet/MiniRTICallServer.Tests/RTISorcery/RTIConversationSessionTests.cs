@@ -22,14 +22,12 @@ public sealed class RTIConversationSessionTests
         List<RealtimeAgentMediaUpdate> updates = [];
         session.MediaUpdate += updates.Add;
 
-        conversation.Raise<ConversationItemStreamingAudioPartDelta>(new TestAudioDelta(
-            "response-7",
-            "item-9",
-            3,
-            new BinaryData(pcm)));
-        conversation.Raise<ConversationItemStreamingAudioFinished>(
-            new TestAudioFinished("response-7", "item-9", 3));
-        conversation.Raise(new ConversationInputSpeechStarted());
+        conversation.RaiseUpdate(
+            new RTICOutputAudioDelta("response-7", "item-9", 0, 3, pcm));
+        conversation.RaiseUpdate(
+            new RTICOutputAudioCompleted("response-7", "item-9", 0, 3));
+        conversation.RaiseUpdate(
+            new RTICInputSpeechStarted("input-item", TimeSpan.Zero));
 
         RealtimeOutputAudioDelta delta = Assert.IsType<RealtimeOutputAudioDelta>(updates[0]);
         RealtimeOutputAudioFinished finished =
@@ -70,10 +68,10 @@ public sealed class RTIConversationSessionTests
         RecordingConversation conversation = new();
         using RTIConversationSession session = new(conversation);
 
-        conversation.Raise(new ConversationSessionStarted());
+        conversation.RaiseUpdate(new RTICSessionCreated(SessionInfo()));
         Assert.False(session.Ready.IsCompleted);
 
-        conversation.Raise(new ConversationSessionConfigured());
+        conversation.RaiseUpdate(new RTICSessionConfigured(SessionInfo()));
         await session.Ready;
     }
 
@@ -84,11 +82,12 @@ public sealed class RTIConversationSessionTests
     {
         RecordingConversation conversation = new();
         using RTIConversationSession session = new(conversation);
-        FailedToConnect.ErrorStatus status = configurationFailure
-            ? FailedToConnect.ErrorStatus.EndpointOptionsMissing
-            : FailedToConnect.ErrorStatus.ServerDidNotRespond;
+        FailedToConnectMsg.ErrorStatus status = configurationFailure
+            ? FailedToConnectMsg.ErrorStatus.EndpointOptionsMissing
+            : FailedToConnectMsg.ErrorStatus.ServerDidNotRespond;
 
-        conversation.Raise(new FailedToConnect(status, "provider unavailable"));
+        conversation.RaiseConversationEvent(
+            new FailedToConnectMsg(status, "provider unavailable"));
 
         AgentPreparationException exception =
             await Assert.ThrowsAsync<AgentPreparationException>(() => session.Ready);
@@ -106,7 +105,7 @@ public sealed class RTIConversationSessionTests
         using RTIConversationSession session = new(conversation);
         Task runTask = session.RunAsync();
 
-        conversation.Raise(new TaskExceptionOccured(
+        conversation.RaiseConversationEvent(new TaskExceptionOccured(
             new InvalidOperationException("provider sender failed")));
         conversation.CompleteRun();
 
@@ -149,16 +148,8 @@ public sealed class RTIConversationSessionTests
         Assert.Equal(1, conversation.RunCount);
     }
 
-    private sealed record TestAudioDelta(
-        string ResponseId,
-        string ItemId,
-        int ContentIndex,
-        BinaryData Audio) : ConversationItemStreamingAudioPartDelta;
-
-    private sealed record TestAudioFinished(
-        string ResponseId,
-        string ItemId,
-        int ContentIndex) : ConversationItemStreamingAudioFinished;
+    private static RTICSessionInfo SessionInfo()
+        => new(null, null, [], null);
 
     private sealed class RecordingConversation : RTIConversation
     {
@@ -168,8 +159,10 @@ public sealed class RTIConversationSessionTests
         private readonly TaskCompletionSource _run =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override EventProducerCollection ReceiverEvents => _eventHost.ReceiverEvents;
-        public override EventQueue ConversationEvents => _eventHost.ConversationEvents;
+        public override EventProducerCollection ConversationEvents =>
+            _eventHost.ConversationEvents;
+        public override EventQueue UpdatesReceiverEvents =>
+            _eventHost.UpdatesReceiverEvents;
         public int RunCount { get; private set; }
         public (string? Instructions, CancellationToken CancellationToken)? Response { get; private set; }
         public CancellationToken InterruptToken { get; private set; }
@@ -177,8 +170,11 @@ public sealed class RTIConversationSessionTests
             Truncation { get; private set; }
         public int CancelCount { get; private set; }
 
-        public void Raise<T>(T update) where T : class
+        public void RaiseConversationEvent<T>(T update) where T : class
             => ConversationEvents.Invoke(update);
+
+        public void RaiseUpdate<T>(T update) where T : class
+            => UpdatesReceiverEvents.Invoke(update);
 
         public void CompleteRun() => _run.TrySetResult();
 

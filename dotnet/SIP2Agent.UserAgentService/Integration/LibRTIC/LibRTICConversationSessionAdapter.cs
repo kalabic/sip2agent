@@ -21,15 +21,17 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
     {
         _conversation = conversation ?? throw new ArgumentNullException(nameof(conversation));
 
-        var events = conversation.ConversationEvents;
+        var conversationEvents = conversation.ConversationEvents;
+        conversationEvents.Connect<FailedToConnectMsg>(false, HandleEvent);
+        conversationEvents.Connect<TaskExceptionOccured>(false, HandleEvent);
+
+        var updates = conversation.UpdatesReceiverEvents;
         // Preserve the LibRTIC mailbox order by forwarding updates inline.
-        events.Connect<FailedToConnect>(false, HandleEvent);
-        events.Connect<TaskExceptionOccured>(false, HandleEvent);
-        events.Connect<ConversationSessionConfigured>(false, HandleEvent);
-        events.Connect<ConversationSessionFinished>(false, HandleEvent);
-        events.Connect<ConversationItemStreamingAudioPartDelta>(false, HandleEvent);
-        events.Connect<ConversationItemStreamingAudioFinished>(false, HandleEvent);
-        events.Connect<ConversationInputSpeechStarted>(false, HandleEvent);
+        updates.Connect<RTICSessionConfigured>(false, HandleEvent);
+        updates.Connect<ConversationSessionFinished>(false, HandleEvent);
+        updates.Connect<RTICOutputAudioDelta>(false, HandleEvent);
+        updates.Connect<RTICOutputAudioCompleted>(false, HandleEvent);
+        updates.Connect<RTICInputSpeechStarted>(false, HandleEvent);
     }
 
     public event Action<RealtimeAgentMediaUpdate>? MediaUpdate;
@@ -127,14 +129,14 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
         }
     }
 
-    private void HandleEvent(object? sender, ConversationSessionConfigured update)
+    private void HandleEvent(object? sender, RTICSessionConfigured update)
         => _ready.TrySetResult();
 
-    private void HandleEvent(object? sender, FailedToConnect update)
+    private void HandleEvent(object? sender, FailedToConnectMsg update)
     {
         AgentPreparationFailureKind kind = update.Reason is
-            FailedToConnect.ErrorStatus.EndpointOptionsMissing or
-            FailedToConnect.ErrorStatus.FailedToConfigure
+            FailedToConnectMsg.ErrorStatus.EndpointOptionsMissing or
+            FailedToConnectMsg.ErrorStatus.FailedToConfigure
                 ? AgentPreparationFailureKind.Configuration
                 : AgentPreparationFailureKind.ProviderUnavailable;
         RecordFailure(new AgentPreparationException(kind, update.Message));
@@ -175,15 +177,15 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
         return failure;
     }
 
-    private void HandleEvent(object? sender, ConversationItemStreamingAudioPartDelta update)
+    private void HandleEvent(object? sender, RTICOutputAudioDelta update)
         => MediaUpdate?.Invoke(new RealtimeOutputAudioDelta(
             new RealtimeOutputIdentity(update.ResponseId, update.ItemId, update.ContentIndex),
-            update.Audio.ToMemory()));
+            update.Audio));
 
-    private void HandleEvent(object? sender, ConversationItemStreamingAudioFinished update)
+    private void HandleEvent(object? sender, RTICOutputAudioCompleted update)
         => MediaUpdate?.Invoke(new RealtimeOutputAudioFinished(
             new RealtimeOutputIdentity(update.ResponseId, update.ItemId, update.ContentIndex)));
 
-    private void HandleEvent(object? sender, ConversationInputSpeechStarted update)
+    private void HandleEvent(object? sender, RTICInputSpeechStarted update)
         => MediaUpdate?.Invoke(new RealtimeInputSpeechStarted());
 }
