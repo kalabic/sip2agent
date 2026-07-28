@@ -20,10 +20,10 @@ namespace SIP2Agent.UserAgentService.Service
         long MediaAuditorSinkFrameCount { get; }
     }
 
-    /// <summary>Accepts per-call configuration for optional headerless encoded-audio capture.</summary>
-    internal interface IMediaAuditorRawRecordingTarget
+    /// <summary>Accepts per-call configuration for optional duplex WAV recording.</summary>
+    internal interface IMediaAuditorRecordingTarget
     {
-        void EnableMediaAuditorRawRecording(string callId, string directoryPath);
+        void EnableMediaAuditorRecording(string callId, string directoryPath);
     }
 
     public sealed partial class SIPEndpointService
@@ -49,7 +49,7 @@ namespace SIP2Agent.UserAgentService.Service
                 if (Volatile.Read(ref _started) != 0)
                 {
                     throw new InvalidOperationException(
-                        "Media auditor raw recording must be enabled before the SIP endpoint starts.");
+                        "Media auditor WAV recording must be enabled before the SIP endpoint starts.");
                 }
 
                 Directory.CreateDirectory(normalizedPath);
@@ -125,9 +125,9 @@ namespace SIP2Agent.UserAgentService.Service
             {
                 _mediaAuditor = new MediaContractAuditor(CallId, _logger, MediaSession);
                 if (mediaAuditorRecordingDirectory is not null &&
-                    _agent is IMediaAuditorRawRecordingTarget recordingTarget)
+                    _agent is IMediaAuditorRecordingTarget recordingTarget)
                 {
-                    recordingTarget.EnableMediaAuditorRawRecording(CallId, mediaAuditorRecordingDirectory);
+                    recordingTarget.EnableMediaAuditorRecording(CallId, mediaAuditorRecordingDirectory);
                 }
                 _mediaAuditor.Attach();
             }
@@ -154,162 +154,103 @@ namespace SIP2Agent.UserAgentService.Service
     internal sealed partial class RealtimeCallerAudioSink
     {
         private long _mediaAuditorFrameCount;
-        private readonly object _mediaAuditorRecordingGate = new();
-        private FileStream? _mediaAuditorRecordingStream;
-        private string? _mediaAuditorRecordingPath;
-        private string? _mediaAuditorFirstFormat;
-        private int _mediaAuditorRecordingFaulted;
-        private int _mediaAuditorMixedFormatWarningLogged;
+        private MediaAuditorWavRecorder? _mediaAuditorWavRecorder;
 
         internal long MediaAuditorFrameCount => Interlocked.Read(ref _mediaAuditorFrameCount);
 
-        internal void EnableMediaAuditorRawRecording(string callId, string directoryPath)
-        {
-            try
-            {
-                string safeCallId = SanitizeCallId(callId);
-                string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(callId)))[..12]
-                    .ToLowerInvariant();
-                string fileName = $"{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}_{safeCallId}_{hash}.raw";
-                string path = Path.Combine(directoryPath, fileName);
-                lock (_mediaAuditorRecordingGate)
-                {
-                    if (_mediaAuditorRecordingStream is not null || _mediaAuditorRecordingFaulted != 0)
-                    {
-                        return;
-                    }
-
-                    _mediaAuditorRecordingStream = new FileStream(
-                        path,
-                        FileMode.CreateNew,
-                        FileAccess.Write,
-                        FileShare.Read,
-                        bufferSize: 64 * 1024,
-                        FileOptions.SequentialScan);
-                    _mediaAuditorRecordingPath = path;
-                }
-                _logger.LogInformation(
-                    "Media auditor is recording sensitive headerless caller audio to {RecordingPath}.",
-                    path);
-            }
-            catch (Exception exception)
-            {
-                DisableMediaAuditorRecording(exception);
-            }
-        }
+        internal void SetMediaAuditorWavRecorder(MediaAuditorWavRecorder? recorder)
+            => Volatile.Write(ref _mediaAuditorWavRecorder, recorder);
 
         partial void RecordMediaAuditorFrame(EncodedAudioFrame encodedMediaFrame)
+            => Interlocked.Increment(ref _mediaAuditorFrameCount);
+
+        partial void RecordMediaAuditorReceivePcm(
+            int sampleRate,
+            ReadOnlySpan<short> samples)
+            => Volatile.Read(ref _mediaAuditorWavRecorder)?
+                .RecordReceive(sampleRate, samples);
+    }
+
+    internal sealed partial class RealtimeAssistantAudioSource
+    {
+        private MediaAuditorWavRecorder? _mediaAuditorWavRecorder;
+
+        internal void SetMediaAuditorWavRecorder(MediaAuditorWavRecorder? recorder)
+            => Volatile.Write(ref _mediaAuditorWavRecorder, recorder);
+
+        partial void RecordMediaAuditorTransmitPcm(
+            int sampleRate,
+            ReadOnlySpan<short> samples)
+            => Volatile.Read(ref _mediaAuditorWavRecorder)?
+                .RecordTransmit(sampleRate, samples);
+    }
+
+    internal sealed partial class RealtimeAgentBridge
+    {
+        private readonly object _mediaAuditorRecordingGate = new();
+        private MediaAuditorWavRecorder? _mediaAuditorWavRecorder;
+
+        internal long MediaAuditorSinkFrameCount => _caller.MediaAuditorFrameCount;
+
+        internal void EnableMediaAuditorRecording(string callId, string directoryPath)
         {
-            Interlocked.Increment(ref _mediaAuditorFrameCount);
             try
             {
+                ArgumentException.ThrowIfNullOrWhiteSpace(callId);
+                ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
                 lock (_mediaAuditorRecordingGate)
                 {
-                    if (_mediaAuditorRecordingStream is null)
+                    if (_mediaAuditorWavRecorder is not null)
                     {
                         return;
                     }
 
-                    string format = encodedMediaFrame.AudioFormat.ToString() ?? "unknown";
-                    if (_mediaAuditorFirstFormat is null)
-                    {
-                        _mediaAuditorFirstFormat = format;
-                        _logger.LogInformation(
-                            "Media auditor raw recording {RecordingPath} first observed audio format {AudioFormat}.",
-                            _mediaAuditorRecordingPath,
-                            format);
-                    }
-                    else if (!string.Equals(_mediaAuditorFirstFormat, format, StringComparison.Ordinal) &&
-                        Interlocked.Exchange(ref _mediaAuditorMixedFormatWarningLogged, 1) == 0)
-                    {
-                        _logger.LogWarning(
-                            "Media auditor raw recording {RecordingPath} changed from {FirstFormat} to {CurrentFormat}; the headerless file now contains mixed encoded formats.",
-                            _mediaAuditorRecordingPath,
-                            _mediaAuditorFirstFormat,
-                            format);
-                    }
-
-                    _mediaAuditorRecordingStream.Write(encodedMediaFrame.EncodedAudio, 0, encodedMediaFrame.EncodedAudio.Length);
+                    string safeCallId = SanitizeCallId(callId);
+                    string hash = Convert.ToHexString(
+                        SHA256.HashData(Encoding.UTF8.GetBytes(callId)))[..12]
+                        .ToLowerInvariant();
+                    string fileName =
+                        $"{DateTime.UtcNow:yyyyMMddTHHmmssfffZ}_{safeCallId}_{hash}.wav";
+                    string path = Path.Combine(directoryPath, fileName);
+                    var recorder = new MediaAuditorWavRecorder(path, _logger);
+                    _mediaAuditorWavRecorder = recorder;
+                    _caller.SetMediaAuditorWavRecorder(recorder);
+                    _assistant.SetMediaAuditorWavRecorder(recorder);
+                    _logger.LogInformation(
+                        "Media auditor is recording sensitive duplex PCM audio to {RecordingPath}; TX is left, RX is right, 24000 Hz PCM16.",
+                        path);
                 }
             }
             catch (Exception exception)
             {
-                DisableMediaAuditorRecording(exception);
+                _logger.LogWarning(
+                    exception,
+                    "Media auditor could not start WAV recording; the call will continue.");
             }
         }
 
-        partial void CloseMediaAuditorRecording()
+        partial void CompleteMediaAuditorRecording()
         {
+            MediaAuditorWavRecorder? recorder;
             lock (_mediaAuditorRecordingGate)
             {
-                CloseMediaAuditorRecordingUnderLock();
+                recorder = _mediaAuditorWavRecorder;
+                _mediaAuditorWavRecorder = null;
+                _caller.SetMediaAuditorWavRecorder(null);
+                _assistant.SetMediaAuditorWavRecorder(null);
             }
-        }
 
-        private void DisableMediaAuditorRecording(Exception exception)
-        {
-            lock (_mediaAuditorRecordingGate)
-            {
-                if (Interlocked.Exchange(ref _mediaAuditorRecordingFaulted, 1) == 0)
-                {
-                    _logger.LogWarning(
-                        exception,
-                        "Media auditor disabled raw recording for {RecordingPath}; the call will continue.",
-                        _mediaAuditorRecordingPath ?? "an uncreated file");
-                }
-                CloseMediaAuditorRecordingUnderLock();
-            }
-        }
-
-        private void CloseMediaAuditorRecordingUnderLock()
-        {
-            FileStream? stream = _mediaAuditorRecordingStream;
-            _mediaAuditorRecordingStream = null;
-            if (stream is not null)
-            {
-                try
-                {
-                    stream.Flush();
-                }
-                catch (Exception exception)
-                {
-                    if (Interlocked.Exchange(ref _mediaAuditorRecordingFaulted, 1) == 0)
-                    {
-                        _logger.LogWarning(exception, "Media auditor could not close raw recording {RecordingPath}.", _mediaAuditorRecordingPath);
-                    }
-                }
-                finally
-                {
-                    try
-                    {
-                        stream.Dispose();
-                    }
-                    catch (Exception exception)
-                    {
-                        if (Interlocked.Exchange(ref _mediaAuditorRecordingFaulted, 1) == 0)
-                        {
-                            _logger.LogWarning(exception, "Media auditor could not dispose raw recording {RecordingPath}.", _mediaAuditorRecordingPath);
-                        }
-                    }
-                }
-            }
+            recorder?.Complete();
         }
 
         private static string SanitizeCallId(string callId)
         {
             HashSet<char> invalid = Path.GetInvalidFileNameChars().ToHashSet();
-            string sanitized = new(callId.Select(character => invalid.Contains(character) ? '_' : character).ToArray());
+            string sanitized = new(
+                callId.Select(character => invalid.Contains(character) ? '_' : character).ToArray());
             sanitized = string.IsNullOrWhiteSpace(sanitized) ? "call" : sanitized;
             return sanitized.Length <= 80 ? sanitized : sanitized[..80];
         }
-    }
-
-    internal sealed partial class RealtimeAgentBridge
-    {
-        internal long MediaAuditorSinkFrameCount => _caller.MediaAuditorFrameCount;
-
-        internal void EnableMediaAuditorRawRecording(string callId, string directoryPath)
-            => _caller.EnableMediaAuditorRawRecording(callId, directoryPath);
     }
 
     internal sealed class MediaContractAuditor
@@ -782,12 +723,12 @@ namespace SIP2Agent.UserAgentService.Service
 
 namespace SIP2Agent.UserAgentService.Integration.LibRTIC
 {
-    internal sealed partial class LibRTICCallAgent : Service.IMediaAuditorFrameMetrics, Service.IMediaAuditorRawRecordingTarget
+    internal sealed partial class LibRTICCallAgent : Service.IMediaAuditorFrameMetrics, Service.IMediaAuditorRecordingTarget
     {
         public long MediaAuditorSinkFrameCount => _audioBridge.MediaAuditorSinkFrameCount;
 
-        public void EnableMediaAuditorRawRecording(string callId, string directoryPath)
-            => _audioBridge.EnableMediaAuditorRawRecording(callId, directoryPath);
+        public void EnableMediaAuditorRecording(string callId, string directoryPath)
+            => _audioBridge.EnableMediaAuditorRecording(callId, directoryPath);
     }
 }
 

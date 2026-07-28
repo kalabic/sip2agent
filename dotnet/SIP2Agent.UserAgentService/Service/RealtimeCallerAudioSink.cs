@@ -229,7 +229,6 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
             return;
         }
 
-        CloseMediaAuditorRecording();
         _decoder.Dispose();
         _callerAudioBuffer.Dispose();
         _workerCancellation.Dispose();
@@ -279,6 +278,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
                     profile,
                     frame.Payload.Length,
                     decoded.Length);
+                RecordMediaAuditorReceivePcm(profile.PcmSampleRate, decoded);
 
                 short[] converted = resampler!.Process(decoded, endOfInput: false);
                 if (converted.Length == 0)
@@ -390,5 +390,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
 
     partial void RecordMediaAuditorFrame(EncodedAudioFrame encodedMediaFrame);
 
-    partial void CloseMediaAuditorRecording();
+    partial void RecordMediaAuditorReceivePcm(
+        int sampleRate,
+        ReadOnlySpan<short> samples);
 }

@@ -13,6 +13,7 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
     internal const int OUTPUT_COMMAND_CAPACITY = RealtimeAssistantAudioSource.OutputCommandCapacity;
 
     private readonly object _gate = new();
+    private readonly ILogger _logger;
     private readonly RealtimeCallerAudioSink _caller;
     private readonly RealtimeAssistantAudioSource _assistant;
     private readonly TaskCompletionSource _completion =
@@ -25,6 +26,7 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
     internal RealtimeAgentBridge(ILogger logger, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
+        _logger = logger;
         _caller = new RealtimeCallerAudioSink(logger, Fail);
         _assistant = new RealtimeAssistantAudioSource(
             logger,
@@ -99,6 +101,7 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
         }
         finally
         {
+            CompleteMediaAuditorRecording();
             _assistant.DisposeOwnedResources();
             _caller.DisposeOwnedResources();
         }
@@ -118,4 +121,6 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
         _caller.RequestStop();
         _completion.TrySetException(exception);
     }
+
+    partial void CompleteMediaAuditorRecording();
 }

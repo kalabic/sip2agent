@@ -59,12 +59,13 @@ public sealed partial class SIPEndpointService : IDisposable, IAsyncDisposable
         => _callAgentFactory();
 
     /// <summary>
-    /// Enables headerless encoded caller-audio recording for realtime calls when the optional
-    /// media auditor was included at compile time.
+    /// Enables duplex WAV recording for realtime calls when the optional media auditor was
+    /// included at compile time.
     /// </summary>
     /// <remarks>
-    /// Each <c>.raw</c> file contains sensitive caller audio without RTP headers or codec metadata.
-    /// Protect the selected directory accordingly.
+    /// The historical method name is retained for source compatibility. Each <c>.wav</c> file is
+    /// classic 24 kHz, 16-bit stereo PCM with transmitted audio on the left channel and received
+    /// audio on the right. Files contain sensitive call audio; protect the directory accordingly.
     /// </remarks>
     public void EnableMediaAuditorRawRecording(string directoryPath)
     {
@@ -73,7 +74,7 @@ public sealed partial class SIPEndpointService : IDisposable, IAsyncDisposable
         if (!supported)
         {
             throw new NotSupportedException(
-                "Media auditor raw recording is unavailable because MEDIA_AUDITOR_ENABLED was not compiled in.");
+                "Media auditor WAV recording is unavailable because MEDIA_AUDITOR_ENABLED was not compiled in.");
         }
     }
 

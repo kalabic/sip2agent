@@ -9,7 +9,7 @@ using System.Threading.Channels;
 
 namespace SIP2Agent.UserAgentService.Service;
 
-internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
+internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisposable
 {
     internal const int RealtimeSampleRate = 24_000;
     internal const int OutputPrebufferPackets = 2;
@@ -618,6 +618,7 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
                 realSamples = 0;
             }
 
+            RecordMediaAuditorTransmitPcm(profile.PcmSampleRate, packet);
             byte[] encoded = _encoder.EncodeAudio(packet, profile.Format);
             if (encoded.Length != profile.EncodedBytesPerPacket)
             {
@@ -680,9 +681,9 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
     {
         lock (_playbackGate)
         {
-            byte[] encoded = _encoder.EncodeAudio(
-                new short[profile.PcmSamplesPerPacket],
-                profile.Format);
+            short[] packet = new short[profile.PcmSamplesPerPacket];
+            RecordMediaAuditorTransmitPcm(profile.PcmSampleRate, packet);
+            byte[] encoded = _encoder.EncodeAudio(packet, profile.Format);
             if (encoded.Length != profile.EncodedBytesPerPacket)
             {
                 throw new InvalidDataException(
@@ -1186,4 +1187,8 @@ internal sealed class RealtimeAssistantAudioSource : IAudioSource, IDisposable
             _pendingSipAudio.Dispose();
         }
     }
+
+    partial void RecordMediaAuditorTransmitPcm(
+        int sampleRate,
+        ReadOnlySpan<short> samples);
 }
