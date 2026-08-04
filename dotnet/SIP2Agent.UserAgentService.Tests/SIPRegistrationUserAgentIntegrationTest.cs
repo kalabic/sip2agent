@@ -1,7 +1,7 @@
-using SIPSorceryExt;
 using SIPSorcery.SIP;
 using System.Net;
 using Xunit;
+using SIPSorcery.SIP.App;
 
 namespace SIP2Agent.UserAgentService.Tests;
 

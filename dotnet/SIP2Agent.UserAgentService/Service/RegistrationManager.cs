@@ -1,7 +1,7 @@
 ﻿using System.Net;
 using Microsoft.Extensions.Logging;
-using SIPSorceryExt;
 using SIPSorcery.SIP;
+using SIPSorcery.SIP.App;
 
 namespace SIP2Agent.UserAgentService.Service;
 
