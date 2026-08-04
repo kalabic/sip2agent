@@ -195,7 +195,7 @@ internal sealed class LibRTICConversationSessionAdapter : IRealtimeAgentSession
                 update.ItemId,
                 update.OutputIndex,
                 update.ContentIndex),
-            update.Audio));
+            update.Audio.ToByteArray()));
 
     private void HandleEvent(object? sender, RTICOutputAudioCompleted update)
         => MediaUpdate?.Invoke(new RealtimeOutputAudioFinished(

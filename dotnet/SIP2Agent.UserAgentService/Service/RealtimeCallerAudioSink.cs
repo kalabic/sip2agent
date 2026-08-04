@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using AudioFormatLib;
 using AudioFormatLib.Buffers;
 using AudioFormatLib.IO;
+using AudioFormatLib.IO.S16;
 using AudioFormatLib.Utils;
 using Microsoft.Extensions.Logging;
 using SIPSorcery.Media;
@@ -20,7 +21,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
     private readonly AudioFormatNegotiation _formats = new();
     private readonly AudioEncoder _decoder;
     private readonly AudioStreamBuffer _callerAudioBuffer;
-    private readonly IPcm16FrameInput _callerAudioInput;
+    private readonly IS16SampleInput _callerAudioInput;
     private readonly Channel<InboundFrame> _frames;
     private readonly CancellationTokenSource _workerCancellation = new();
     private readonly Action<Exception> _onFault;
@@ -36,7 +37,9 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
 
     internal long DroppedFrameCount => Interlocked.Read(ref _droppedFrames);
 
-    internal IPcm16FrameOutput CallerAudioOutput { get; }
+    internal IAudioOutputs CallerAudio { get; }
+
+    internal IS16SampleOutput CallerAudioS16 { get; }
 
     internal RealtimeCallerAudioSink(ILogger logger, Action<Exception> onFault)
     {
@@ -47,16 +50,17 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
         _onFault = onFault;
         _decoder = new AudioEncoder(AudioFormatNegotiation.CreateSupportedFormats().ToArray());
         _callerAudioBuffer = AudioStreamBuffer.CreateForDuration(
-            new APcmFormat(
-                ASampleValueFormat.S16,
+            new ASampleFormat(
+                AValueFormat.S16,
                 RealtimeSampleRate,
                 1,
                 byteOrder: AByteOrder.LittleEndian),
             TimeSpan.FromSeconds(2));
-        _callerAudioInput = _callerAudioBuffer.Input.Pcm16Frames
-            ?? throw new InvalidOperationException("The caller audio buffer is not PCM16-compatible.");
-        CallerAudioOutput = _callerAudioBuffer.Output.Pcm16Frames
-            ?? throw new InvalidOperationException("The caller audio buffer is not PCM16-compatible.");
+        _callerAudioInput = _callerAudioBuffer.Input.S16Samples
+            ?? throw new InvalidOperationException("The caller audio buffer is not S16-compatible.");
+        CallerAudio = _callerAudioBuffer.Output;
+        CallerAudioS16 = CallerAudio.S16Samples
+            ?? throw new InvalidOperationException("The caller audio buffer is not S16-compatible.");
         _frames = Channel.CreateBounded<InboundFrame>(
             new BoundedChannelOptions(InputChannelCapacity)
             {
@@ -265,7 +269,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
                 if (workerEpoch != frame.Epoch || workerSampleRate != profile.PcmSampleRate)
                 {
                     resampler?.Dispose();
-                    resampler = AudioResampler.CreatePcm16(
+                    resampler = AudioResampler.CreateS16(
                         profile.PcmSampleRate,
                         RealtimeSampleRate);
                     samplesWithoutOutput = 0;

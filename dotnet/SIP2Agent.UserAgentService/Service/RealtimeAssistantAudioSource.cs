@@ -1,6 +1,7 @@
 using AudioFormatLib;
 using AudioFormatLib.Buffers;
 using AudioFormatLib.IO;
+using AudioFormatLib.IO.S16;
 using AudioFormatLib.Utils;
 using Microsoft.Extensions.Logging;
 using SIPSorcery.Media;
@@ -453,7 +454,7 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
                 "Realtime output audio overlapped a different active response item.");
         }
 
-        short[] input = Pcm16LittleEndian.Decode(delta.Pcm16At24Khz);
+        short[] input = S16LittleEndian.Decode(delta.Pcm16At24Khz);
         active.TotalRealtimeSamplesReceived += input.Length;
         active.ReservedRealtimeSamples += input.Length;
 
@@ -1119,8 +1120,8 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
         public AudioCodecProfile Profile { get; }
         public AudioResampler Resampler { get; }
         public CancellationTokenSource PacingCancellation { get; }
-        public IPcm16FrameInput PendingSipInput { get; }
-        public IPcm16FrameOutput PendingSipOutput { get; }
+        public IS16SampleInput PendingSipInput { get; }
+        public IS16SampleOutput PendingSipOutput { get; }
         public int PendingFrameCount => PendingSipOutput.Count;
         public long TotalRealtimeSamplesReceived { get; set; }
         public long TotalMediaSamplesProduced { get; set; }
@@ -1142,23 +1143,23 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
             Identity = identity;
             Epoch = epoch;
             Profile = profile;
-            Resampler = AudioResampler.CreatePcm16(
+            Resampler = AudioResampler.CreateS16(
                 RealtimeSampleRate,
                 profile.PcmSampleRate);
             PacingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _pendingSipAudio = AudioStreamBuffer.CreateForDuration(
-                new APcmFormat(
-                    ASampleValueFormat.S16,
+                new ASampleFormat(
+                    AValueFormat.S16,
                     profile.PcmSampleRate,
                     1,
                     byteOrder: AByteOrder.LittleEndian),
                 TimeSpan.FromSeconds(OutputMaxDurationSeconds));
-            PendingSipInput = _pendingSipAudio.Input.Pcm16Frames
+            PendingSipInput = _pendingSipAudio.Input.S16Samples
                 ?? throw new InvalidOperationException(
-                    "The pending SIP audio buffer is not PCM16-compatible.");
-            PendingSipOutput = _pendingSipAudio.Output.Pcm16Frames
+                    "The pending SIP audio buffer is not S16-compatible.");
+            PendingSipOutput = _pendingSipAudio.Output.S16Samples
                 ?? throw new InvalidOperationException(
-                    "The pending SIP audio buffer is not PCM16-compatible.");
+                    "The pending SIP audio buffer is not S16-compatible.");
         }
 
         public void WriteFrames(ReadOnlySpan<short> source)

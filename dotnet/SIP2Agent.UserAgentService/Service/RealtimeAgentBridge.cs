@@ -1,4 +1,5 @@
 using AudioFormatLib.IO;
+using AudioFormatLib.IO.S16;
 using Microsoft.Extensions.Logging;
 using SIPSorceryMedia.Abstractions;
 
@@ -42,7 +43,9 @@ internal sealed partial class RealtimeAgentBridge : IDisposable, IAsyncDisposabl
 
     internal long UnplayedRealtimeSampleCount => _assistant.UnplayedRealtimeSampleCount;
 
-    internal IPcm16FrameOutput CallerAudioOutput => _caller.CallerAudioOutput;
+    internal IS16SampleOutput CallerAudioS16 => _caller.CallerAudioS16;
+
+    internal IAudioOutputs CallerAudio => _caller.CallerAudio;
 
     internal RealtimeCallerAudioSink Caller => _caller;
 

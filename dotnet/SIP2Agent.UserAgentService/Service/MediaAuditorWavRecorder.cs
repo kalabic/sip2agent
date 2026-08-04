@@ -206,7 +206,7 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
             ? new short[frameCount]
             : Dequeue(_receive.Pending, frameCount);
         short[] stereo = Multiplex(transmit, receive);
-        writer.WritePcmFrames(Pcm16LittleEndian.Encode(stereo));
+        writer.WritePcmFrames(S16LittleEndian.Encode(stereo));
         _framesWritten += frameCount;
     }
 
@@ -231,13 +231,13 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
         }
 
         var stereo = new short[checked(transmit.Length * 2)];
-        var monoFormat = new APcmFormat(
-            ASampleValueFormat.S16,
+        var monoFormat = new ASampleFormat(
+            AValueFormat.S16,
             OutputSampleRate,
             channelCount: 1,
             byteOrder: AByteOrder.LittleEndian);
-        var stereoFormat = new APcmFormat(
-            ASampleValueFormat.S16,
+        var stereoFormat = new ASampleFormat(
+            AValueFormat.S16,
             OutputSampleRate,
             channelCount: 2,
             planar: false,
@@ -346,7 +346,7 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
                 _sourceSampleRate = sampleRate;
                 if (sampleRate != OutputSampleRate)
                 {
-                    _resampler = AudioResampler.CreatePcm16(
+                    _resampler = AudioResampler.CreateS16(
                         sampleRate,
                         OutputSampleRate);
                 }

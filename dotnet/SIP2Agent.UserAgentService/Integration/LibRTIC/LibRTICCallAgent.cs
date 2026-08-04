@@ -27,7 +27,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
     private readonly InfoLog _info;
     private readonly RTICConfig _configuration;
     private readonly LibRTICCallAgentOptions _options;
-    private readonly Func<InfoLog, RTICConfig, IPcm16FrameOutput, CancellationToken, IRealtimeAgentSession>
+    private readonly Func<InfoLog, RTICConfig, IAudioOutputs, CancellationToken, IRealtimeAgentSession>
         _sessionFactory;
     private readonly RealtimeAgentBridge _audioBridge;
     private readonly Func<Task> _startMediaAsync;
@@ -46,7 +46,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
         RTICConfig configuration,
         LibRTICCallAgentOptions options,
         ILogger logger,
-        Func<InfoLog, RTICConfig, IPcm16FrameOutput, CancellationToken, IRealtimeAgentSession> sessionFactory,
+        Func<InfoLog, RTICConfig, IAudioOutputs, CancellationToken, IRealtimeAgentSession> sessionFactory,
         RealtimeAgentBridge audioBridge,
         VoIPMediaSession mediaSession,
         Func<Task> startMediaAsync)
@@ -112,7 +112,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
         RTICConfig configuration,
         LibRTICCallAgentOptions options,
         ILogger logger,
-        Func<InfoLog, RTICConfig, IPcm16FrameOutput, CancellationToken, IRealtimeAgentSession> sessionFactory,
+        Func<InfoLog, RTICConfig, IAudioOutputs, CancellationToken, IRealtimeAgentSession> sessionFactory,
         Func<Task> startMediaAsync,
         bool acceptRtpFromAny = true,
         PortRange? rtpPortRange = null)
@@ -190,7 +190,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
     private static IRealtimeAgentSession CreateSession(
         InfoLog info,
         RTICConfig configuration,
-        IPcm16FrameOutput callerAudioOutput,
+        IAudioOutputs callerAudioOutput,
         CancellationToken cancellationToken)
     {
         RTIConversation conversation = RTIConversationTask.Create(info, cancellationToken);
@@ -228,7 +228,7 @@ internal sealed partial class LibRTICCallAgent : ICallAgent, IAsyncDisposable
             IRealtimeAgentSession session = _sessionFactory(
                 _info,
                 _configuration,
-                _audioBridge.CallerAudioOutput,
+                _audioBridge.CallerAudio,
                 _lifetimeCancellation.Token);
             try
             {

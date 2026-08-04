@@ -263,18 +263,18 @@ public sealed class RealtimeAgentBridgeTests
         byte[] payload = codec.EncodeAudio(CreateRamp(160), pcmu);
 
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
-        await WaitUntilAsync(() => endpoint.CallerAudioOutput.Count > 0);
-        int bufferedFramesBeforePause = endpoint.CallerAudioOutput.Count;
+        await WaitUntilAsync(() => endpoint.CallerAudioS16.Count > 0);
+        int bufferedFramesBeforePause = endpoint.CallerAudioS16.Count;
 
         await endpoint.Caller.PauseAudioSink();
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
         await Task.Yield();
-        Assert.Equal(bufferedFramesBeforePause, endpoint.CallerAudioOutput.Count);
+        Assert.Equal(bufferedFramesBeforePause, endpoint.CallerAudioS16.Count);
 
         await endpoint.Caller.ResumeAudioSink();
         endpoint.Caller.GotEncodedMediaFrame(new EncodedAudioFrame(0, pcmu, 20, payload));
         await WaitUntilAsync(
-            () => endpoint.CallerAudioOutput.Count > bufferedFramesBeforePause);
+            () => endpoint.CallerAudioS16.Count > bufferedFramesBeforePause);
     }
 
     [Fact]
@@ -308,12 +308,12 @@ public sealed class RealtimeAgentBridgeTests
 
         for (int index = 0; index < 150 && !endpoint.Completion.IsCompleted; index++)
         {
-            int previousFrameCount = endpoint.CallerAudioOutput.Count;
+            int previousFrameCount = endpoint.CallerAudioS16.Count;
             endpoint.Caller.GotEncodedMediaFrame(
                 new EncodedAudioFrame(0, pcmu, 20, payload));
             await WaitUntilAsync(
                 () => endpoint.Completion.IsCompleted ||
-                      endpoint.CallerAudioOutput.Count > previousFrameCount);
+                      endpoint.CallerAudioS16.Count > previousFrameCount);
         }
 
         InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -777,10 +777,10 @@ public sealed class RealtimeAgentBridgeTests
         int minimumFrames = 1)
     {
         await WaitUntilAsync(
-            () => endpoint.CallerAudioOutput.Count >= minimumFrames);
+            () => endpoint.CallerAudioS16.Count >= minimumFrames);
 
-        short[] audio = new short[endpoint.CallerAudioOutput.Count];
-        int framesRead = endpoint.CallerAudioOutput.Read(audio, 0, audio.Length);
+        short[] audio = new short[endpoint.CallerAudioS16.Count];
+        int framesRead = endpoint.CallerAudioS16.Read(audio, 0, audio.Length);
         Array.Resize(ref audio, framesRead);
         return audio;
     }

@@ -21,7 +21,12 @@ public sealed class LibRTICConversationSessionAdapterTests
         session.MediaUpdate += updates.Add;
 
         conversation.RaiseUpdate(
-            new RTICOutputAudioDelta("response-7", "item-9", 0, 3, pcm));
+            new RTICOutputAudioDelta(
+                "response-7",
+                "item-9",
+                0,
+                3,
+                global::LibRTIC.Realtime.RealtimeAudioContract.CreatePacket(pcm)));
         conversation.RaiseUpdate(
             new RTICOutputAudioCompleted("response-7", "item-9", 0, 3));
         conversation.RaiseUpdate(
