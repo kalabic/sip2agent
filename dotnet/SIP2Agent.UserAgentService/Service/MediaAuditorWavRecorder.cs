@@ -18,6 +18,8 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
         ((uint.MaxValue - 36L) / BytesPerStereoFrame) * BytesPerStereoFrame;
 
     private const int MaximumWriteFrames = 4_096;
+    // AudioFormatLib 1.9 requires final residual capacity to be supplied by the caller.
+    private const int FinalResamplerDrainCapacitySamples = 4_096;
 
     private readonly object _gate = new();
     private readonly ILogger _logger;
@@ -346,7 +348,7 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
                 _sourceSampleRate = sampleRate;
                 if (sampleRate != OutputSampleRate)
                 {
-                    _resampler = AudioResampler.CreateS16(
+                    _resampler = AudioResamplerChecked.CreateS16(
                         sampleRate,
                         OutputSampleRate);
                 }
@@ -360,7 +362,8 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
             }
             else
             {
-                short[] converted = _resampler.Process(
+                short[] converted = AudioResamplerChecked.Process(
+                    _resampler,
                     samples.ToArray(),
                     endOfInput: false);
                 Enqueue(converted);
@@ -392,9 +395,18 @@ internal sealed class MediaAuditorWavRecorder : IDisposable
                 _sourceSampleRate);
             if (_resampler is not null)
             {
-                short[] flushed = _resampler.Process(
-                    Array.Empty<short>(),
+                AudioPacket emptyInput = new(
+                    _resampler.InputFormat,
+                    sampleCapacity: 0);
+                AudioPacket flushOutput = new(
+                    _resampler.OutputFormat,
+                    FinalResamplerDrainCapacitySamples);
+                _ = AudioResamplerChecked.Process(
+                    _resampler,
+                    emptyInput,
+                    ref flushOutput,
                     endOfInput: true);
+                short[] flushed = flushOutput.AsValues<short>().Values.ToArray();
                 long required = expected - _segmentOutputSamples;
                 if (required < 0)
                 {

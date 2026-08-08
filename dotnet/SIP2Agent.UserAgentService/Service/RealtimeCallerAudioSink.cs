@@ -269,7 +269,7 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
                 if (workerEpoch != frame.Epoch || workerSampleRate != profile.PcmSampleRate)
                 {
                     resampler?.Dispose();
-                    resampler = AudioResampler.CreateS16(
+                    resampler = AudioResamplerChecked.CreateS16(
                         profile.PcmSampleRate,
                         RealtimeSampleRate);
                     samplesWithoutOutput = 0;
@@ -284,7 +284,10 @@ internal sealed partial class RealtimeCallerAudioSink : IAudioSink, IDisposable
                     decoded.Length);
                 RecordMediaAuditorReceivePcm(profile.PcmSampleRate, decoded);
 
-                short[] converted = resampler!.Process(decoded, endOfInput: false);
+                short[] converted = AudioResamplerChecked.Process(
+                    resampler!,
+                    decoded,
+                    endOfInput: false);
                 if (converted.Length == 0)
                 {
                     samplesWithoutOutput += decoded.Length;

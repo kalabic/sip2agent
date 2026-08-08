@@ -18,6 +18,8 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
     internal const int OutputMaxRealtimeSamples = RealtimeSampleRate * OutputMaxDurationSeconds;
     internal const int OutputCommandCapacity = 2_048;
     private const int RealtimeSamplesPer20Milliseconds = 480;
+    // AudioFormatLib 1.9 requires final residual capacity to be supplied by the caller.
+    private const int FinalResamplerDrainCapacitySamples = 4_096;
 
     private static readonly TimeSpan PacketDuration = TimeSpan.FromMilliseconds(20);
 
@@ -458,7 +460,10 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
         active.TotalRealtimeSamplesReceived += input.Length;
         active.ReservedRealtimeSamples += input.Length;
 
-        short[] converted = active.Resampler.Process(input, endOfInput: false);
+        short[] converted = AudioResamplerChecked.Process(
+            active.Resampler,
+            input,
+            endOfInput: false);
         if (converted.Length == 0)
         {
             active.RealtimeSamplesWithoutOutput += input.Length;
@@ -501,7 +506,18 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
                 "The Realtime audio completion marker did not match the active response item.");
         }
 
-        short[] flushed = active.Resampler.Process(Array.Empty<short>(), endOfInput: true);
+        AudioPacket emptyInput = new(
+            active.Resampler.InputFormat,
+            sampleCapacity: 0);
+        AudioPacket flushOutput = new(
+            active.Resampler.OutputFormat,
+            FinalResamplerDrainCapacitySamples);
+        _ = AudioResamplerChecked.Process(
+            active.Resampler,
+            emptyInput,
+            ref flushOutput,
+            endOfInput: true);
+        short[] flushed = flushOutput.AsValues<short>().Values.ToArray();
         long expectedOutput = ConvertSampleCountCeiling(
             active.TotalRealtimeSamplesReceived,
             RealtimeSampleRate,
@@ -1143,7 +1159,7 @@ internal sealed partial class RealtimeAssistantAudioSource : IAudioSource, IDisp
             Identity = identity;
             Epoch = epoch;
             Profile = profile;
-            Resampler = AudioResampler.CreateS16(
+            Resampler = AudioResamplerChecked.CreateS16(
                 RealtimeSampleRate,
                 profile.PcmSampleRate);
             PacingCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
